@@ -61,26 +61,33 @@
   const SUPABASE_ANON_KEY = 'sb_publishable_RbCAWLM9oKmvOEDdt2ybQg_JQK8jo67';
   const EDGE_FUNCTION = 'https://xnebqywzurzwpfzlzyvw.supabase.co/functions/v1/analyze-image';
   const REPORT_FUNCTION = 'https://xnebqywzurzwpfzlzyvw.supabase.co/functions/v1/generate-report';
-  
-  // 不持久化会话
+
   const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false }
+    auth: { persistSession: true, detectSessionInUrl: false }
   });
 
   let currentUser = null;
   let userProfile = null;
 
-  // 在线状态控制
+  // sessionStorage 标记活动会话
+  const SESSION_KEY = 'safety_app_active';
+  function setActiveSession() { sessionStorage.setItem(SESSION_KEY, '1'); }
+  function clearActiveSession() { sessionStorage.removeItem(SESSION_KEY); }
+  function isActiveSession() { return sessionStorage.getItem(SESSION_KEY) === '1'; }
+
+  // 在线状态
   async function setOnlineStatus(online) {
     if (!currentUser) return;
-    try {
-      await supabaseClient.from('profiles').update({ online }).eq('id', currentUser.id);
-    } catch (e) {
-      console.error('更新在线状态失败', e);
-    }
+    await supabaseClient.from('profiles').upsert({
+      id: currentUser.id,
+      online: online,
+      username: userProfile?.username || currentUser.email?.split('@')[0],
+      role: userProfile?.role || 'safety'
+    }, { onConflict: 'id' });
   }
 
   async function logout() {
+    clearActiveSession();
     await setOnlineStatus(false);
     await supabaseClient.auth.signOut();
     window.location.reload();
@@ -92,43 +99,54 @@
       await setOnlineStatus(false);
       currentUser = null;
       userProfile = null;
+      clearActiveSession();
       renderAuthPage('login');
     } else if (session) {
       currentUser = session.user;
       const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single();
       userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
+      setActiveSession();
       renderApp();
     }
   });
 
   async function init() {
-    try {
-      const { data: { session } } = await supabaseClient.auth.getSession();
-      if (session) {
-        currentUser = session.user;
-        const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single();
-        userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
-        if (!profile) {
-          await supabaseClient.from('profiles').insert({
-            id: currentUser.id,
-            username: currentUser.email?.split('@')[0] || 'unknown',
-            role: 'safety',
-            online: true
-          });
-        } else {
-          await setOnlineStatus(true);
-        }
-        renderApp();
-      } else {
-        renderAuthPage('login');
-      }
-    } catch (e) {
-      console.error(e);
-      document.getElementById('app').innerHTML = '<div class="card"><p style="color:red;">加载失败，请检查网络。</p></div>';
+    if (!isActiveSession()) {
+      await supabaseClient.auth.signOut();
+      renderAuthPage('login');
+      return;
+    }
+
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    if (session) {
+      currentUser = session.user;
+      const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single();
+      userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
+
+      // 使用 upsert 避免重复键冲突
+      await supabaseClient.from('profiles').upsert({
+        id: currentUser.id,
+        username: currentUser.email?.split('@')[0] || 'unknown',
+        role: userProfile?.role || 'safety',
+        online: true
+      }, { onConflict: 'id' });
+
+      setActiveSession();
+      renderApp();
+    } else {
+      renderAuthPage('login');
     }
   }
 
-  // ==================== 登录/注册（带在线检测） ====================
+  // 页面关闭时尝试设置离线
+  window.addEventListener('beforeunload', () => {
+    if (currentUser) {
+      navigator.sendBeacon(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${currentUser.id}`,
+        JSON.stringify({ online: false }));
+    }
+  });
+
+  // ==================== 登录/注册 ====================
   function renderAuthPage(mode = 'login') {
     document.getElementById('app').innerHTML = `
       <div class="status-bar"><span>🔐 AI+管网安全助手</span></div>
@@ -166,12 +184,12 @@
         if (error) return alert(error.message);
         const { data: userData } = await supabaseClient.auth.getUser();
         if (userData?.user) {
-          await supabaseClient.from('profiles').insert({
+          await supabaseClient.from('profiles').upsert({
             id: userData.user.id,
             username: username || email.split('@')[0],
             role: 'safety',
             online: false
-          });
+          }, { onConflict: 'id' });
         }
         alert('注册成功，请登录');
         renderAuthPage('login');
@@ -181,30 +199,11 @@
       // 登录
       try {
         const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-        if (error) {
-          alert(error.message);
-          return;
-        }
+        if (error) { alert(error.message); return; }
+
         const userId = data.user.id;
-
-        // 检查在线状态（带错误处理）
-        let online = false;
-        try {
-          const { data: profile, error: profileError } = await supabaseClient
-            .from('profiles')
-            .select('online')
-            .eq('id', userId)
-            .single();
-          if (profileError) throw profileError;
-          online = profile?.online || false;
-        } catch (e) {
-          alert('检测在线状态失败，请稍后重试');
-          await supabaseClient.auth.signOut();
-          return;
-        }
-
-        if (online) {
-          // 已在其他设备登录
+        const { data: profile } = await supabaseClient.from('profiles').select('online').eq('id', userId).single();
+        if (profile && profile.online) {
           await supabaseClient.auth.signOut();
           emailInput.classList.add('error');
           passwordInput.classList.add('error');
@@ -213,8 +212,13 @@
           return;
         }
 
-        // 登录成功，标记在线并刷新
-        await supabaseClient.from('profiles').update({ online: true }).eq('id', userId);
+        await supabaseClient.from('profiles').upsert({
+          id: userId,
+          online: true,
+          username: data.user.email?.split('@')[0],
+          role: 'safety'
+        }, { onConflict: 'id' });
+        setActiveSession();
         window.location.reload();
       } catch (err) {
         alert('登录失败：' + err.message);
@@ -234,6 +238,9 @@
   }
 
   // ==================== 安全员界面 ====================
+  let currentPreviewURL = null;
+  let currentUploadFile = null;
+
   function renderSafetyUI() {
     document.getElementById('app').innerHTML = `
       <div class="status-bar"><span>👷 ${userProfile.username}</span><button id="logoutBtn">退出</button></div>
@@ -255,9 +262,6 @@
     renderSafetyPage('upload');
   }
 
-  // 用来保存当前预览的 Object URL，以便释放
-  let currentPreviewURL = null;
-
   async function renderSafetyPage(page) {
     const content = document.getElementById('safetyContent');
     if (page === 'upload') {
@@ -272,23 +276,19 @@
       const fi = document.getElementById('imageInput');
       const pr = document.getElementById('previewImage');
       const ab = document.getElementById('analyzeBtn');
-      let curFile = null;
+
+      if (currentPreviewURL) {
+        pr.src = currentPreviewURL;
+        pr.style.display = 'block';
+        ab.disabled = false;
+      }
 
       fi.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        if (file.size > 10 * 1024 * 1024) {
-          alert('图片不能超过 10MB');
-          fi.value = '';
-          return;
-        }
-        // 释放之前的 Object URL
-        if (currentPreviewURL) {
-          URL.revokeObjectURL(currentPreviewURL);
-          currentPreviewURL = null;
-        }
-        curFile = file;
-        // 创建新的 Object URL 用于预览
+        if (file.size > 10 * 1024 * 1024) { alert('图片不能超过 10MB'); fi.value = ''; return; }
+        if (currentPreviewURL) URL.revokeObjectURL(currentPreviewURL);
+        currentUploadFile = file;
         currentPreviewURL = URL.createObjectURL(file);
         pr.src = currentPreviewURL;
         pr.style.display = 'block';
@@ -296,12 +296,11 @@
       });
 
       ab.addEventListener('click', async () => {
-        if (!curFile) return;
-        ab.disabled = true;
-        ab.textContent = '⏳ 分析中...';
+        if (!currentUploadFile) return;
+        ab.disabled = true; ab.textContent = '⏳ 分析中...';
         document.getElementById('analysisResult').innerHTML = '<p>调用千问视觉模型分析…</p>';
         try {
-          const compressed = await compressImage(curFile, 600, 0.6);
+          const compressed = await compressImage(currentUploadFile, 600, 0.6);
           const base64 = compressed.split(',')[1];
           const { data: { session } } = await supabaseClient.auth.getSession();
           if (!session) throw new Error('登录已过期');
@@ -311,10 +310,7 @@
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ image_base64: base64 })
           });
-          if (!resp.ok) {
-            const errData = await resp.json();
-            throw new Error(errData.error || '请求失败');
-          }
+          if (!resp.ok) { const errData = await resp.json(); throw new Error(errData.error || '请求失败'); }
           const { analysis } = await resp.json();
           addLog('拍照分析', `隐患数 ${analysis.risks.length}`);
           let riskHtml = '';
@@ -363,7 +359,7 @@
     }
   }
 
-  // 图片压缩
+  // ==================== 公用组件 ====================
   function compressImage(file, maxWidth = 600, quality = 0.6) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -553,10 +549,196 @@
     }
   }
 
-  // 报告生成与导出（略，与之前相同）...
-  // 以下省略报告生成相关函数，实际部署时请保留完整版本（generateReport, renderReportPreview, exportReportExcel, exportReportWord 等）
-  // 这些函数在前面的完整代码中已提供，请一并保留。
+  // ---------- 报告生成 ----------
+  async function generateReport() {
+    const type = document.getElementById('reportType').value;
+    const monthVal = document.getElementById('reportMonth').value;
+    if (!monthVal) return alert('请选择月份');
+    const [year, month] = monthVal.split('-').map(Number);
+    const periodLabel = type === 'monthly' ? `${year}年${month}月` : `${year}年第${Math.ceil(month/3)}季度`;
 
+    const preview = document.getElementById('reportPreview');
+    preview.style.display = 'block';
+    preview.innerHTML = '<p>正在收集数据并生成AI分析…</p>';
+
+    const { data: allRisks } = await supabaseClient.from('risks').select('*');
+    if (!allRisks) { preview.innerHTML = '<p style="color:red;">数据加载失败</p>'; return; }
+
+    const filtered = allRisks.filter(r => {
+      const d = new Date(r.upload_time);
+      if (type === 'monthly') return d.getFullYear() === year && (d.getMonth()+1) === month;
+      else {
+        const qStart = Math.floor((month-1)/3)*3 + 1;
+        return d.getFullYear() === year && (d.getMonth()+1) >= qStart && (d.getMonth()+1) <= qStart+2;
+      }
+    });
+    const confirmed = filtered.filter(r => r.status === 'confirmed' || r.status === 'fixed');
+    const totalAnalysis = filtered.length;
+    const totalConfirmedRisks = confirmed.reduce((acc, r) => acc + (r.confirmed_risks?.length || 0), 0);
+    const typeCount = {};
+    confirmed.forEach(r => {
+      (r.confirmed_risks || []).forEach(idx => {
+        const risk = r.ai_result?.risks?.[idx];
+        if (risk) typeCount[risk.type] = (typeCount[risk.type]||0) + 1;
+      });
+    });
+    const severityCount = {高:0, 中:0, 低:0};
+    confirmed.forEach(r => {
+      (r.confirmed_risks || []).forEach(idx => {
+        const risk = r.ai_result?.risks?.[idx];
+        if (risk) severityCount[risk.severity] = (severityCount[risk.severity]||0) + 1;
+      });
+    });
+    const userStats = {};
+    filtered.forEach(r => {
+      if (!userStats[r.username]) userStats[r.username] = { analysis: 0, confirmed: 0 };
+      userStats[r.username].analysis += 1;
+      if (r.status === 'confirmed' || r.status === 'fixed') userStats[r.username].confirmed += (r.confirmed_risks?.length || 0);
+    });
+
+    let prevPeriodLabel = '', prevData = null;
+    if (type === 'monthly') {
+      const prevMonth = month === 1 ? 12 : month-1;
+      const prevYear = month === 1 ? year-1 : year;
+      prevData = allRisks.filter(r => {
+        const d = new Date(r.upload_time);
+        return d.getFullYear() === prevYear && (d.getMonth()+1) === prevMonth;
+      });
+      prevPeriodLabel = `${prevYear}年${prevMonth}月`;
+    } else {
+      const qStart = Math.floor((month-1)/3)*3 + 1;
+      const prevQStart = qStart - 3;
+      if (prevQStart >= 1) {
+        prevData = allRisks.filter(r => {
+          const d = new Date(r.upload_time);
+          return d.getFullYear() === year && (d.getMonth()+1) >= prevQStart && (d.getMonth()+1) <= prevQStart+2;
+        });
+        prevPeriodLabel = `${year}年第${Math.ceil(prevQStart/3)}季度`;
+      }
+    }
+    const prevConfirmed = prevData ? prevData.filter(r => r.status === 'confirmed' || r.status === 'fixed').reduce((acc, r) => acc + (r.confirmed_risks?.length || 0), 0) : 0;
+
+    const statsForAI = {
+      period: periodLabel,
+      totalAnalysis,
+      totalConfirmedRisks,
+      typeDistribution: typeCount,
+      severityDistribution: severityCount,
+      users: userStats,
+      previousPeriod: prevPeriodLabel,
+      previousConfirmedRisks: prevConfirmed,
+      change: prevConfirmed > 0 ? ((totalConfirmedRisks - prevConfirmed) / prevConfirmed * 100).toFixed(1) + '%' : '无历史数据'
+    };
+
+    let summary = '';
+    try {
+      const { data: { session } } = await supabaseClient.auth.getSession();
+      const token = session.access_token;
+      const resp = await fetch(REPORT_FUNCTION, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stats: statsForAI, period: periodLabel })
+      });
+      const result = await resp.json();
+      if (result.success) summary = result.summary;
+      else throw new Error(result.error);
+    } catch (err) {
+      summary = 'AI摘要生成失败，请检查报告函数配置。';
+    }
+
+    window.currentReportData = { statsForAI, filtered, confirmed, summary, periodLabel, type };
+    renderReportPreview();
+  }
+
+  function renderReportPreview() {
+    const { statsForAI, summary, periodLabel } = window.currentReportData;
+    const preview = document.getElementById('reportPreview');
+    preview.innerHTML = `
+      <h4>📋 ${periodLabel} 安全报告</h4>
+      <div class="report-section">
+        <strong>AI 智能分析：</strong>
+        <p style="white-space:pre-wrap;margin:10px 0;">${summary}</p>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-box"><div class="number">${statsForAI.totalAnalysis}</div>分析次数</div>
+        <div class="stat-box"><div class="number">${statsForAI.totalConfirmedRisks}</div>确认隐患数</div>
+      </div>
+      <p>与${statsForAI.previousPeriod || '上一周期'}对比：隐患数量变化 ${statsForAI.change}</p>
+      <div class="report-buttons">
+        <button class="btn btn-success" id="exportExcelBtn">📥 导出 Excel</button>
+        <button class="btn btn-outline" id="exportWordBtn">📄 导出 Word</button>
+        <button class="btn btn-outline" id="saveReportBtn">💾 保存报告至云端</button>
+        <button class="btn btn-sm" id="regenerateBtn">🔄 重新生成</button>
+      </div>
+    `;
+    document.getElementById('exportExcelBtn').addEventListener('click', () => {
+      const { statsForAI, filtered, confirmed, summary, periodLabel } = window.currentReportData;
+      exportReportExcel(statsForAI, filtered, confirmed, summary, periodLabel);
+    });
+    document.getElementById('exportWordBtn').addEventListener('click', () => {
+      const { statsForAI, summary, periodLabel, filtered } = window.currentReportData;
+      exportReportWord(statsForAI, summary, periodLabel, filtered);
+    });
+    document.getElementById('saveReportBtn').addEventListener('click', async () => {
+      const { statsForAI, summary, periodLabel, type } = window.currentReportData;
+      const { error } = await supabaseClient.from('reports').insert({
+        user_id: currentUser.id,
+        username: userProfile.username,
+        period: periodLabel,
+        report_type: type,
+        stats: statsForAI,
+        summary: summary,
+        created_at: new Date().toISOString()
+      });
+      if (error) alert('保存失败：' + error.message);
+      else alert('报告已保存至云端！');
+    });
+    document.getElementById('regenerateBtn').addEventListener('click', generateReport);
+  }
+
+  function exportReportExcel(stats, allRecords, confirmed, summary, period) {
+    const wb = XLSX.utils.book_new();
+    const overviewData = [['指标', '数值'], ['报告周期', period], ['总分析次数', stats.totalAnalysis], ['确认隐患总数', stats.totalConfirmedRisks], ['与上期对比变化', stats.change], ['AI摘要', summary]];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(overviewData), '总览');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['隐患类型', '数量'], ...Object.entries(stats.typeDistribution)]), '隐患类型');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['风险等级', '数量'], ...Object.entries(stats.severityDistribution)]), '风险等级');
+    const userData = [['用户', '分析次数', '确认隐患数'], ...Object.entries(stats.users).map(([u, d]) => [u, d.analysis, d.confirmed])];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(userData), '人员上报');
+    const detailData = [['记录ID', '用户', '上传时间', '状态', '隐患类型', '风险等级', '描述', '整改建议']];
+    confirmed.forEach(r => {
+      (r.ai_result?.risks || []).forEach(risk => detailData.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, risk.type, risk.severity, risk.description, risk.suggestion]));
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detailData), '隐患明细');
+    XLSX.writeFile(wb, `安全报告_${period}.xlsx`);
+  }
+
+  function exportReportWord(stats, summary, period, records) {
+    const htmlContent = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
+      <head><meta charset="utf-8"><title>安全报告</title></head>
+      <body>
+        <h1>${period} 管网安全报告</h1>
+        <h2>AI 智能分析</h2>
+        <p>${summary}</p>
+        <h2>统计概览</h2>
+        <p>总分析次数：${stats.totalAnalysis}，确认隐患：${stats.totalConfirmedRisks}，变化：${stats.change}</p>
+        <h2>隐患类型分布</h2>
+        <ul>${Object.entries(stats.typeDistribution).map(([k,v]) => `<li>${k}: ${v}次</li>`).join('')}</ul>
+        <h2>风险等级分布</h2>
+        <ul>${Object.entries(stats.severityDistribution).map(([k,v]) => `<li>${k}: ${v}次</li>`).join('')}</ul>
+        <h2>人员上报情况</h2>
+        <table border="1"><tr><th>用户</th><th>分析次数</th><th>确认隐患</th></tr>${Object.entries(stats.users).map(([u,d]) => `<tr><td>${u}</td><td>${d.analysis}</td><td>${d.confirmed}</td></tr>`).join('')}</table>
+        <h2>详细隐患清单</h2>
+        <table border="1"><tr><th>上传时间</th><th>用户</th><th>隐患类型</th><th>等级</th><th>描述</th><th>建议</th></tr>${records.filter(r => r.status==='confirmed'||r.status==='fixed').flatMap(r => (r.ai_result?.risks||[]).map(risk => `<tr><td>${new Date(r.upload_time).toLocaleString()}</td><td>${r.username}</td><td>${risk.type}</td><td>${risk.severity}</td><td>${risk.description}</td><td>${risk.suggestion}</td></tr>`)).join('')}</table>
+      </body></html>
+    `;
+    const blob = new Blob(['\ufeff' + htmlContent], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `安全报告_${period}.doc`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ==================== 辅助函数 ====================
   async function addLog(action, detail) {
     await supabaseClient.from('logs').insert({
       user_id: currentUser.id,
@@ -606,14 +788,7 @@
     attachRecordEvents();
   }
 
-  // 页面关闭时释放预览 URL
-  window.addEventListener('beforeunload', () => {
-    if (currentPreviewURL) {
-      URL.revokeObjectURL(currentPreviewURL);
-      currentPreviewURL = null;
-    }
-  });
-
+  // 启动
   init();
 </script>
 </body>

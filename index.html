@@ -4,7 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>AI+管网安全助手 云端版</title>
+  <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- Supabase JS SDK -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
@@ -52,33 +54,39 @@
 <div class="app-container" id="app"></div>
 
 <script>
-  // ==================== 您的 Supabase 配置 ====================
+  // ==================== 单一 Supabase 实例 ====================
   const SUPABASE_URL = 'https://xnebqywzurzwpfzlzyvw.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_RbCAWLM9oKmvOEDdt2ybQg_JQK8jo67';
   const EDGE_FUNCTION = 'https://xnebqywzurzwpfzlzyvw.supabase.co/functions/v1/analyze-image';
-  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  
+  // 使用全局 supabase 命名空间创建客户端（仅一次）
+  const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
   let currentUser = null;
   let userProfile = null;
 
   // ---------- 初始化 ----------
   async function init() {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session) {
-      currentUser = session.user;
-      const { data: profile } = await supabase.from('profiles').select('*').eq('id', currentUser.id).single();
-      userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
-      if (!profile) {
-        // 自动创建 profile
-        await supabase.from('profiles').insert({
-          id: currentUser.id,
-          username: currentUser.email?.split('@')[0] || 'unknown',
-          role: 'safety'
-        });
+    try {
+      const { data: { session } } = await supabaseClient.auth.getSession();
+      if (session) {
+        currentUser = session.user;
+        const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single();
+        userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
+        if (!profile) {
+          await supabaseClient.from('profiles').insert({
+            id: currentUser.id,
+            username: currentUser.email?.split('@')[0] || 'unknown',
+            role: 'safety'
+          });
+        }
+        renderApp();
+      } else {
+        renderAuthPage('login');
       }
-      renderApp();
-    } else {
-      renderAuthPage('login');
+    } catch (e) {
+      console.error('初始化失败:', e);
+      document.getElementById('app').innerHTML = '<div class="card"><p style="color:red;">初始化失败，请检查网络或配置。</p></div>';
     }
   }
 
@@ -104,17 +112,16 @@
       const password = document.getElementById('authPassword').value;
       if (mode === 'register') {
         const username = document.getElementById('authUsername').value.trim();
-        const { error } = await supabase.auth.signUp({ email, password });
+        const { error } = await supabaseClient.auth.signUp({ email, password });
         if (error) return alert(error.message);
-        // 创建 profile
-        const { data: userData } = await supabase.auth.getUser();
+        const { data: userData } = await supabaseClient.auth.getUser();
         if (userData?.user) {
-          await supabase.from('profiles').insert({ id: userData.user.id, username: username || email.split('@')[0], role: 'safety' });
+          await supabaseClient.from('profiles').insert({ id: userData.user.id, username: username || email.split('@')[0], role: 'safety' });
         }
-        alert('注册成功，请登录（若需管理员权限请联系管理员修改）');
+        alert('注册成功，请登录');
         renderAuthPage('login');
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
         if (error) return alert(error.message);
         window.location.reload();
       }
@@ -143,7 +150,7 @@
         <div class="nav-item" data-page="stats"><span class="icon">📊</span>统计</div>
       </div>
     `;
-    document.getElementById('logoutBtn').addEventListener('click', async () => { await supabase.auth.signOut(); window.location.reload(); });
+    document.getElementById('logoutBtn').addEventListener('click', async () => { await supabaseClient.auth.signOut(); window.location.reload(); });
     document.querySelectorAll('.bottom-nav .nav-item').forEach(item => {
       item.addEventListener('click', function() {
         document.querySelectorAll('.bottom-nav .nav-item').forEach(n => n.classList.remove('active'));
@@ -179,11 +186,9 @@
         ab.disabled = true; ab.textContent = '⏳ 分析中...';
         document.getElementById('analysisResult').innerHTML = '<p>调用千问视觉模型分析…</p>';
         try {
-          // 上传到 Storage
           const fileName = `${currentUser.id}/${Date.now()}.jpg`;
-          await supabase.storage.from('risks-photos').upload(fileName, curFile);
-          const { data: urlData } = supabase.storage.from('risks-photos').getPublicUrl(fileName);
-          // 调用 Edge Function
+          await supabaseClient.storage.from('risks-photos').upload(fileName, curFile);
+          const { data: urlData } = supabaseClient.storage.from('risks-photos').getPublicUrl(fileName);
           const base64 = curDataUrl.split(',')[1];
           const resp = await fetch(EDGE_FUNCTION, {
             method: 'POST',
@@ -193,7 +198,6 @@
           if (!resp.ok) throw new Error(await resp.text());
           const { analysis, error } = await resp.json();
           if (error) throw new Error(error);
-          // 保存记录
           const record = {
             id: Date.now(),
             user_id: currentUser.id,
@@ -203,7 +207,7 @@
             ai_result: analysis,
             status: 'pending',
           };
-          await supabase.from('risks').insert(record);
+          await supabaseClient.from('risks').insert(record);
           addLog('拍照分析', `隐患数 ${analysis.risks.length}`);
           let riskHtml = '';
           analysis.risks.forEach(r => riskHtml += `<div class="risk-item severity-${r.severity==='高'?'high':(r.severity==='中'?'medium':'low')}"><span class="risk-tag tag-${r.severity==='高'?'high':(r.severity==='中'?'medium':'low')}">${r.severity}风险</span><strong>${r.type}</strong><p>${r.description}</p><p>📝 ${r.suggestion}</p></div>`);
@@ -215,14 +219,14 @@
         }
       });
     } else if (page === 'records') {
-      const { data: risks } = await supabase.from('risks').select('*').eq('user_id', currentUser.id).order('upload_time', { ascending: false });
+      const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', currentUser.id).order('upload_time', { ascending: false });
       let html = '<h3>📋 我的记录</h3>';
       if (!risks || risks.length === 0) html += '<div class="empty-state">暂无记录</div>';
       else risks.forEach(r => html += renderRecordCard(r));
       content.innerHTML = html;
       attachRecordEvents();
     } else if (page === 'stats') {
-      const { data: risks } = await supabase.from('risks').select('*').eq('user_id', currentUser.id);
+      const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', currentUser.id);
       const confirmed = risks?.filter(r => r.status === 'confirmed' || r.status === 'fixed') || [];
       let totalConfirmed = 0, typeCount = {}, severities = {高:0,中:0,低:0};
       confirmed.forEach(r => {
@@ -275,13 +279,13 @@
     document.querySelectorAll('.confirm-risk').forEach(btn => {
       btn.onclick = async function() {
         const rid = +this.dataset.rid, idx = +this.dataset.idx;
-        const { data: rec } = await supabase.from('risks').select('*').eq('id', rid).single();
+        const { data: rec } = await supabaseClient.from('risks').select('*').eq('id', rid).single();
         if (rec && rec.status === 'pending') {
           let confirmed = rec.confirmed_risks || [];
           if (!confirmed.includes(idx)) confirmed.push(idx);
           const total = rec.ai_result.risks.length;
           const newStatus = (confirmed.length + (rec.false_alarm_risks?.length || 0)) >= total ? 'confirmed' : 'pending';
-          await supabase.from('risks').update({ confirmed_risks: confirmed, status: newStatus }).eq('id', rid);
+          await supabaseClient.from('risks').update({ confirmed_risks: confirmed, status: newStatus }).eq('id', rid);
           addLog('确认隐患', `记录${rid} 确认${idx}`);
           renderSafetyPage('records');
         }
@@ -290,13 +294,13 @@
     document.querySelectorAll('.false-alarm').forEach(btn => {
       btn.onclick = async function() {
         const rid = +this.dataset.rid, idx = +this.dataset.idx;
-        const { data: rec } = await supabase.from('risks').select('*').eq('id', rid).single();
+        const { data: rec } = await supabaseClient.from('risks').select('*').eq('id', rid).single();
         if (rec && rec.status === 'pending') {
           let falseAlarm = rec.false_alarm_risks || [];
           if (!falseAlarm.includes(idx)) falseAlarm.push(idx);
           const total = rec.ai_result.risks.length;
           const newStatus = (falseAlarm.length + (rec.confirmed_risks?.length || 0)) >= total ? (rec.confirmed_risks?.length > 0 ? 'confirmed' : 'false_alarm') : 'pending';
-          await supabase.from('risks').update({ false_alarm_risks: falseAlarm, status: newStatus }).eq('id', rid);
+          await supabaseClient.from('risks').update({ false_alarm_risks: falseAlarm, status: newStatus }).eq('id', rid);
           addLog('标记误报', `记录${rid} 误报${idx}`);
           renderSafetyPage('records');
         }
@@ -309,10 +313,10 @@
         input.onchange = async (e) => {
           const file = e.target.files[0]; if(!file) return;
           const fileName = `fix/${rid}_${Date.now()}.jpg`;
-          await supabase.storage.from('fix-photos').upload(fileName, file);
-          const { data: urlData } = supabase.storage.from('fix-photos').getPublicUrl(fileName);
+          await supabaseClient.storage.from('fix-photos').upload(fileName, file);
+          const { data: urlData } = supabaseClient.storage.from('fix-photos').getPublicUrl(fileName);
           const desc = prompt('整改描述：');
-          await supabase.from('risks').update({ fix_image_path: urlData.publicUrl, fix_desc: desc || '已整改', fix_time: new Date().toISOString(), status: 'fixed' }).eq('id', rid);
+          await supabaseClient.from('risks').update({ fix_image_path: urlData.publicUrl, fix_desc: desc || '已整改', fix_time: new Date().toISOString(), status: 'fixed' }).eq('id', rid);
           addLog('上传整改', `记录${rid} 完成整改`);
           renderSafetyPage('records');
         };
@@ -333,7 +337,7 @@
         <div class="nav-item" data-page="logs"><span class="icon">📜</span>日志</div>
       </div>
     `;
-    document.getElementById('logoutBtn').addEventListener('click', async () => { await supabase.auth.signOut(); window.location.reload(); });
+    document.getElementById('logoutBtn').addEventListener('click', async () => { await supabaseClient.auth.signOut(); window.location.reload(); });
     document.querySelectorAll('.bottom-nav .nav-item').forEach(item => {
       item.addEventListener('click', function() {
         document.querySelectorAll('.bottom-nav .nav-item').forEach(n => n.classList.remove('active'));
@@ -347,7 +351,7 @@
   async function renderAdminPage(page) {
     const content = document.getElementById('adminContent');
     if (page === 'overview') {
-      const { data: allRisks } = await supabase.from('risks').select('*');
+      const { data: allRisks } = await supabaseClient.from('risks').select('*');
       const confirmed = allRisks?.filter(r => r.status === 'confirmed' || r.status === 'fixed') || [];
       let totalConfirmed = 0, typeCount = {};
       confirmed.forEach(r => {
@@ -368,8 +372,8 @@
       if (totalConfirmed > 0) new Chart(document.getElementById('adminTypeChart'), { type: 'pie', data: { labels: Object.keys(typeCount), datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }] } });
       document.getElementById('exportCsvBtn').addEventListener('click', () => exportToCSV(allRisks || []));
     } else if (page === 'users') {
-      const { data: profiles } = await supabase.from('profiles').select('*');
-      const { data: allRisks } = await supabase.from('risks').select('*');
+      const { data: profiles } = await supabaseClient.from('profiles').select('*');
+      const { data: allRisks } = await supabaseClient.from('risks').select('*');
       let rows = '';
       profiles?.forEach(p => {
         const userRisks = allRisks?.filter(r => r.user_id === p.id) || [];
@@ -387,7 +391,7 @@
       document.querySelectorAll('.delete-user-data').forEach(btn => {
         btn.onclick = async () => {
           if (!confirm('确定删除该用户所有数据？不可恢复！')) return;
-          await supabase.from('risks').delete().eq('user_id', btn.dataset.uid);
+          await supabaseClient.from('risks').delete().eq('user_id', btn.dataset.uid);
           addLog('删除数据', `管理员删除用户 ${btn.dataset.uid} 的数据`);
           renderAdminPage('users');
         };
@@ -405,7 +409,7 @@
         const type = document.getElementById('reportType').value;
         const mv = document.getElementById('reportMonth').value; if(!mv) return alert('请选择月份');
         const [y,m] = mv.split('-').map(Number);
-        const { data: allRisks } = await supabase.from('risks').select('*');
+        const { data: allRisks } = await supabaseClient.from('risks').select('*');
         let filtered = allRisks || [];
         if (type === 'monthly') {
           filtered = filtered.filter(r => { const d = new Date(r.upload_time); return d.getFullYear()===y && (d.getMonth()+1)===m; });
@@ -417,7 +421,7 @@
         document.getElementById('reportPreview').innerHTML = `<div class="card"><h4>📋 报告</h4><p>确认隐患记录数：<strong>${conf.length}</strong></p><p>总分析数：${filtered.length}</p><button class="btn btn-outline" onclick="window.print()">🖨️ 打印/导出PDF</button></div>`;
       });
     } else if (page === 'logs') {
-      const { data: logs } = await supabase.from('logs').select('*').order('created_at', { ascending: false }).limit(100);
+      const { data: logs } = await supabaseClient.from('logs').select('*').order('created_at', { ascending: false }).limit(100);
       let html = '<h3>📜 操作日志</h3>';
       logs?.forEach(l => html += `<div class="log-entry"><strong>${l.username}</strong> ${l.action} - ${l.detail} <span style="float:right;">${new Date(l.created_at).toLocaleString()}</span></div>`);
       content.innerHTML = html;
@@ -425,8 +429,8 @@
   }
 
   async function showUserData(uid) {
-    const { data: profile } = await supabase.from('profiles').select('*').eq('id', uid).single();
-    const { data: risks } = await supabase.from('risks').select('*').eq('user_id', uid).order('upload_time', { ascending: false });
+    const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', uid).single();
+    const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', uid).order('upload_time', { ascending: false });
     const detailDiv = document.getElementById('userDetail');
     let html = `<div class="card"><h4>📋 ${profile?.username} 的数据</h4>
       <p>累计分析：${risks?.length || 0} | 确认隐患：${risks?.reduce((acc, r) => acc + (r.confirmed_risks?.length||0), 0)}</p>
@@ -438,7 +442,7 @@
     detailDiv.innerHTML = html;
     document.getElementById('deleteUserDataBtn').addEventListener('click', async () => {
       if (!confirm('确定删除？')) return;
-      await supabase.from('risks').delete().eq('user_id', uid);
+      await supabaseClient.from('risks').delete().eq('user_id', uid);
       addLog('删除数据', `管理员删除用户 ${uid} 全部数据`);
       detailDiv.innerHTML = '<p>数据已删除</p>';
     });
@@ -446,9 +450,8 @@
     attachRecordEvents();
   }
 
-  // ---------- 辅助功能 ----------
   async function addLog(action, detail) {
-    await supabase.from('logs').insert({
+    await supabaseClient.from('logs').insert({
       user_id: currentUser.id,
       username: userProfile.username,
       action,

@@ -42,9 +42,7 @@
     .stat-box .number { font-size: 28px; font-weight: 700; color: #1e3b5a; }
     .chart-container { width: 100%; height: 220px; margin: 10px 0 20px; }
     .login-form { padding: 30px 20px; }
-    .login-form input { width: 100%; padding: 12px 16px; margin: 8px 0 16px; border-radius: 12px; border: 1px solid #ddd; font-size: 16px; transition: border 0.2s; }
-    .login-form input.error { border-color: #e74c3c !important; background: #fff5f5; }
-    .error-message { color: #e74c3c; font-size: 13px; margin-top: -10px; margin-bottom: 10px; display: none; }
+    .login-form input { width: 100%; padding: 12px 16px; margin: 8px 0 16px; border-radius: 12px; border: 1px solid #ddd; font-size: 16px; }
     .empty-state { text-align: center; padding: 30px; color: #95a5a6; }
     .user-table { width: 100%; border-collapse: collapse; margin: 15px 0; }
     .user-table th, .user-table td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 14px; }
@@ -68,50 +66,13 @@
   let currentUser = null;
   let userProfile = null;
 
-  // 设备会话标识
-  function getDeviceSessionId() {
-    let id = sessionStorage.getItem('device_session');
-    if (!id) {
-      id = Date.now().toString(36) + Math.random().toString(36).substr(2);
-      sessionStorage.setItem('device_session', id);
-    }
-    return id;
-  }
-
-  function clearDeviceSession() {
-    sessionStorage.removeItem('device_session');
-  }
-
-  async function setOnlineStatus(online) {
-    if (!currentUser) return;
-    try {
-      await supabaseClient.from('profiles').upsert({
-        id: currentUser.id,
-        online,
-        online_device: online ? getDeviceSessionId() : null,
-        username: userProfile?.username || currentUser.email?.split('@')[0],
-        role: userProfile?.role || 'safety'
-      });
-    } catch (e) {
-      console.error('更新在线状态失败', e);
-    }
-  }
-
+  // 退出登录
   async function logout() {
-    clearDeviceSession();
-    await setOnlineStatus(false);
     await supabaseClient.auth.signOut();
     window.location.reload();
   }
 
-  window.addEventListener('beforeunload', () => {
-    if (currentUser) {
-      clearDeviceSession();
-      const payload = JSON.stringify({ online: false, online_device: null });
-      navigator.sendBeacon(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${currentUser.id}`, new Blob([payload], { type: 'application/json' }));
-    }
-  });
-
+  // 监听认证状态
   supabaseClient.auth.onAuthStateChange(async (event, session) => {
     if (event === 'SIGNED_OUT') {
       currentUser = null;
@@ -122,15 +83,12 @@
       const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single();
       userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
       if (!profile) {
+        // 自动创建用户资料（如果不存在）
         await supabaseClient.from('profiles').upsert({
           id: currentUser.id,
-          online: true,
-          online_device: getDeviceSessionId(),
           username: currentUser.email?.split('@')[0] || 'unknown',
           role: 'safety'
         });
-      } else {
-        await setOnlineStatus(true);
       }
       renderApp();
     }
@@ -142,23 +100,13 @@
       currentUser = session.user;
       const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single();
       userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
-
-      const deviceId = getDeviceSessionId();
-      if (profile && profile.online && profile.online_device && profile.online_device !== deviceId) {
-        await supabaseClient.auth.signOut();
-        clearDeviceSession();
-        renderAuthPage('login', '您的账号已在其他设备登录，请先退出后再试。');
-        return;
+      if (!profile) {
+        await supabaseClient.from('profiles').upsert({
+          id: currentUser.id,
+          username: currentUser.email?.split('@')[0] || 'unknown',
+          role: 'safety'
+        });
       }
-
-      await supabaseClient.from('profiles').upsert({
-        id: currentUser.id,
-        online: true,
-        online_device: deviceId,
-        username: userProfile?.username || currentUser.email?.split('@')[0],
-        role: userProfile?.role || 'safety'
-      });
-
       renderApp();
     } else {
       renderAuthPage('login');
@@ -166,13 +114,12 @@
   }
 
   // ==================== 登录/注册 ====================
-  function renderAuthPage(mode = 'login', errorMsg = null) {
+  function renderAuthPage(mode = 'login') {
     document.getElementById('app').innerHTML = `
       <div class="status-bar"><span>🔐 AI+管网安全助手</span></div>
       <div class="main-content login-form">
         <h2 style="text-align:center; margin-bottom:20px;">${mode === 'login' ? '登录' : '注册'}</h2>
         <input type="email" id="authEmail" placeholder="邮箱" value="${mode === 'login' ? 'ghzhangsan01@163.com' : ''}">
-        <div class="error-message" id="loginError" style="display:${errorMsg ? 'block' : 'none'}">${errorMsg || ''}</div>
         <input type="password" id="authPassword" placeholder="密码" value="${mode === 'login' ? '123456' : ''}">
         ${mode === 'register' ? '<input type="text" id="authUsername" placeholder="用户名" value="">' : ''}
         <button class="btn" style="width:100%; margin-top:10px;" id="authBtn">${mode === 'login' ? '登 录' : '注 册'}</button>
@@ -182,14 +129,9 @@
       </div>
     `;
 
-    const emailInput = document.getElementById('authEmail');
-    const passwordInput = document.getElementById('authPassword');
-    const errorDiv = document.getElementById('loginError');
-
     document.getElementById('authBtn').addEventListener('click', async () => {
-      errorDiv.style.display = 'none';
-      const email = emailInput.value.trim();
-      const password = passwordInput.value;
+      const email = document.getElementById('authEmail').value.trim();
+      const password = document.getElementById('authPassword').value;
 
       if (mode === 'register') {
         const username = document.getElementById('authUsername').value.trim();
@@ -200,8 +142,7 @@
           await supabaseClient.from('profiles').upsert({
             id: userData.user.id,
             username: username || email.split('@')[0],
-            role: 'safety',
-            online: false
+            role: 'safety'
           });
         }
         alert('注册成功，请登录');
@@ -210,29 +151,8 @@
       }
 
       try {
-        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
         if (error) { alert(error.message); return; }
-
-        const userId = data.user.id;
-        const deviceId = getDeviceSessionId();
-
-        const { data: profile } = await supabaseClient.from('profiles').select('online, online_device').eq('id', userId).single();
-        if (profile && profile.online && profile.online_device && profile.online_device !== deviceId) {
-          await supabaseClient.auth.signOut();
-          emailInput.classList.add('error');
-          passwordInput.classList.add('error');
-          errorDiv.textContent = '⚠️ 该账户已在其它地方登录，请先退出其它设备后再试。';
-          errorDiv.style.display = 'block';
-          return;
-        }
-
-        await supabaseClient.from('profiles').upsert({
-          id: userId,
-          online: true,
-          online_device: deviceId,
-          username: data.user.email?.split('@')[0],
-          role: 'safety'
-        });
         window.location.reload();
       } catch (err) {
         alert('登录失败：' + err.message);
@@ -562,7 +482,7 @@
     }
   }
 
-  // 报告生成函数
+  // 报告生成函数（保持不变）
   async function generateReport() {
     const type = document.getElementById('reportType').value;
     const monthVal = document.getElementById('reportMonth').value;

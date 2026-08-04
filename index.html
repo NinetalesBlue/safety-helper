@@ -68,7 +68,7 @@
   let currentUser = null;
   let userProfile = null;
 
-  // 设备会话标识（sessionStorage 生命周期跟随标签页）
+  // 设备会话标识（标签页级别）
   function getDeviceSessionId() {
     let id = sessionStorage.getItem('device_session');
     if (!id) {
@@ -78,6 +78,11 @@
     return id;
   }
 
+  // 退出时清除标识
+  function clearDeviceSession() {
+    sessionStorage.removeItem('device_session');
+  }
+
   // 更新在线状态
   async function setOnlineStatus(online) {
     if (!currentUser) return;
@@ -85,22 +90,60 @@
       await supabaseClient.from('profiles').upsert({
         id: currentUser.id,
         online: online,
+        online_device: online ? getDeviceSessionId() : null,
         username: userProfile?.username || currentUser.email?.split('@')[0],
-        role: userProfile?.role || 'safety',
-        online_device: online ? getDeviceSessionId() : null
+        role: userProfile?.role || 'safety'
       }, { onConflict: 'id' });
     } catch (e) {
       console.error('更新在线状态失败', e);
     }
   }
 
-  // 退出
   async function logout() {
-    sessionStorage.removeItem('device_session');
+    clearDeviceSession();
     await setOnlineStatus(false);
     await supabaseClient.auth.signOut();
     window.location.reload();
   }
+
+  // 页面关闭或刷新时，尽力清除设备标识并离线
+  window.addEventListener('beforeunload', () => {
+    if (currentUser) {
+      // 立即清除设备标识（sessionStorage 会被浏览器清除）
+      clearDeviceSession();
+      // 使用 beacon 发送离线请求（POST 无法设置复杂头，简单发送 JSON）
+      const payload = JSON.stringify({ online: false, online_device: null });
+      navigator.sendBeacon(
+        `${SUPABASE_URL}/rest/v1/profiles?id=eq.${currentUser.id}`,
+        new Blob([payload], { type: 'application/json' })
+      );
+    }
+  });
+
+  // 监听认证状态（刷新时自动同步）
+  supabaseClient.auth.onAuthStateChange(async (event, session) => {
+    if (event === 'SIGNED_OUT') {
+      currentUser = null;
+      userProfile = null;
+      renderAuthPage('login');
+    } else if (session) {
+      currentUser = session.user;
+      const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single();
+      userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
+      if (!profile) {
+        await supabaseClient.from('profiles').upsert({
+          id: currentUser.id,
+          online: true,
+          online_device: getDeviceSessionId(),
+          username: currentUser.email?.split('@')[0] || 'unknown',
+          role: 'safety'
+        }, { onConflict: 'id' });
+      } else {
+        await setOnlineStatus(true);
+      }
+      renderApp();
+    }
+  });
 
   // 初始化
   async function init() {
@@ -110,17 +153,18 @@
       const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single();
       userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
 
+      // 当前设备 ID
       const deviceId = getDeviceSessionId();
-      // 检查该账户是否已在其他设备在线（且不是当前设备）
-      if (profile && profile.online && profile.online_device !== deviceId) {
-        // 其他设备在线，踢出当前会话
+
+      // 如果该账号有在线设备且不是当前设备，才踢出（禁止多地登录）
+      if (profile && profile.online && profile.online_device && profile.online_device !== deviceId) {
         await supabaseClient.auth.signOut();
-        sessionStorage.removeItem('device_session');
+        clearDeviceSession();
         renderAuthPage('login', '您的账号已在其他设备登录，请先退出后再试。');
         return;
       }
 
-      // 正常登录或刷新，更新在线状态并设置设备标识
+      // 正常进入或刷新，设置在线
       await supabaseClient.from('profiles').upsert({
         id: currentUser.id,
         online: true,
@@ -129,25 +173,11 @@
         role: userProfile?.role || 'safety'
       }, { onConflict: 'id' });
 
-      if (!profile) {
-        // 新用户自动创建 profile（已通过 upsert 处理）
-      }
       renderApp();
     } else {
       renderAuthPage('login');
     }
   }
-
-  // 页面关闭时清除设备标识并设为离线
-  window.addEventListener('beforeunload', () => {
-    if (currentUser) {
-      // 清除 sessionStorage 中的设备标识，表明当前设备已退出
-      sessionStorage.removeItem('device_session');
-      // 异步设置为离线（尽量执行）
-      navigator.sendBeacon(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${currentUser.id}`,
-        JSON.stringify({ online: false, online_device: null }));
-    }
-  });
 
   // ==================== 登录/注册 ====================
   function renderAuthPage(mode = 'login', errorMsg = null) {
@@ -193,16 +223,19 @@
         return;
       }
 
+      // 登录
       try {
         const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
         if (error) { alert(error.message); return; }
 
         const userId = data.user.id;
-        // 检查在线状态
+
+        // 检查在线状态（排除当前设备）
+        const deviceId = getDeviceSessionId();
         const { data: profile } = await supabaseClient.from('profiles').select('online, online_device').eq('id', userId).single();
-        if (profile && profile.online) {
-          // 已有设备在线，且不是当前设备（当前设备尚未设置 device_session）
-          // 拒绝登录
+
+        if (profile && profile.online && profile.online_device && profile.online_device !== deviceId) {
+          // 已有其他设备在线
           await supabaseClient.auth.signOut();
           emailInput.classList.add('error');
           passwordInput.classList.add('error');
@@ -211,8 +244,7 @@
           return;
         }
 
-        // 登录成功，生成设备会话并设置在线
-        const deviceId = getDeviceSessionId();
+        // 登录成功，设置当前设备在线
         await supabaseClient.from('profiles').upsert({
           id: userId,
           online: true,
@@ -549,7 +581,7 @@
     }
   }
 
-  // 报告生成（完整实现）
+  // 报告生成与导出（完整保留）
   async function generateReport() {
     const type = document.getElementById('reportType').value;
     const monthVal = document.getElementById('reportMonth').value;

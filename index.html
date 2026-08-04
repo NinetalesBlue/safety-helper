@@ -6,10 +6,9 @@
   <title>AI+管网安全助手 云端版</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <!-- SheetJS for Excel export -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
   <style>
-    /* 与之前样式完全一致，这里省略，实际使用时请保留完整样式 */
+    /* 保持原有样式完全不变，此处省略，实际请复制之前完整的 style 标签 */
     * { margin:0; padding:0; box-sizing:border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fb; color: #2c3e50; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 12px; }
     .app-container { width: 100%; max-width: 520px; background: #ffffff; border-radius: 24px; box-shadow: 0 12px 40px rgba(0,0,0,0.08); overflow: hidden; display: flex; flex-direction: column; min-height: 90vh; }
@@ -49,7 +48,6 @@
     .user-table { width: 100%; border-collapse: collapse; margin: 15px 0; }
     .user-table th, .user-table td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 14px; }
     .user-table th { background: #f9f9f9; font-weight: 600; }
-    .report-section { margin: 15px 0; }
     .report-buttons { display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap; }
   </style>
 </head>
@@ -57,7 +55,6 @@
 <div class="app-container" id="app"></div>
 
 <script>
-  // 配置
   const SUPABASE_URL = 'https://xnebqywzurzwpfzlzyvw.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_RbCAWLM9oKmvOEDdt2ybQg_JQK8jo67';
   const EDGE_FUNCTION = 'https://xnebqywzurzwpfzlzyvw.supabase.co/functions/v1/analyze-image';
@@ -67,30 +64,86 @@
   let currentUser = null;
   let userProfile = null;
 
-  // 认证监听
   supabaseClient.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT') { currentUser = null; userProfile = null; renderAuthPage('login'); }
     else if (session) { currentUser = session.user; supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single().then(({ data }) => { userProfile = data || { role: 'safety', username: currentUser.email?.split('@')[0] }; renderApp(); }); }
   });
 
   async function init() {
-    const { data: { session } } = await supabaseClient.auth.getSession();
-    if (session) { currentUser = session.user; const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single(); userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] }; if (!profile) { await supabaseClient.from('profiles').insert({ id: currentUser.id, username: currentUser.email?.split('@')[0] || 'unknown', role: 'safety' }); } renderApp(); }
-    else renderAuthPage('login');
+    try {
+      const { data: { session } } = await supabaseClient.auth.getSession();
+      if (session) {
+        currentUser = session.user;
+        const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single();
+        userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
+        if (!profile) {
+          await supabaseClient.from('profiles').insert({ id: currentUser.id, username: currentUser.email?.split('@')[0] || 'unknown', role: 'safety' });
+        }
+        renderApp();
+      } else {
+        renderAuthPage('login');
+      }
+    } catch (e) {
+      console.error(e);
+      document.getElementById('app').innerHTML = '<div class="card"><p style="color:red;">加载失败，请检查网络。</p></div>';
+    }
   }
 
-  function renderAuthPage(mode='login') {
-    document.getElementById('app').innerHTML = `...`; // 保持原有登录页面代码不变
+  // ================= 登录/注册页 (保持不变) =================
+  function renderAuthPage(mode = 'login') {
+    document.getElementById('app').innerHTML = `
+      <div class="status-bar"><span>🔐 AI+管网安全助手</span></div>
+      <div class="main-content login-form">
+        <h2 style="text-align:center; margin-bottom:20px;">${mode === 'login' ? '登录' : '注册'}</h2>
+        <input type="email" id="authEmail" placeholder="邮箱" value="${mode === 'login' ? 'ghzhangsan01@163.com' : ''}">
+        <input type="password" id="authPassword" placeholder="密码" value="${mode === 'login' ? '123456' : ''}">
+        ${mode === 'register' ? '<input type="text" id="authUsername" placeholder="用户名" value="">' : ''}
+        <button class="btn" style="width:100%; margin-top:10px;" id="authBtn">${mode === 'login' ? '登 录' : '注 册'}</button>
+        <p style="text-align:center; margin-top:16px;">
+          ${mode === 'login' ? "还没有账号？ <a href='#' id='switchToRegister'>注册</a>" : "已有账号？ <a href='#' id='switchToLogin'>登录</a>"}
+        </p>
+        <p style="font-size:12px; color:#7f8c8d; text-align:center;">测试账号：ghzhangsan01@163.com / 123456<br>管理员：admin@safety.ai（需在数据库设为admin）</p>
+      </div>
+    `;
+    document.getElementById('authBtn').addEventListener('click', async () => {
+      const email = document.getElementById('authEmail').value.trim();
+      const password = document.getElementById('authPassword').value;
+      if (mode === 'register') {
+        const username = document.getElementById('authUsername').value.trim();
+        const { error } = await supabaseClient.auth.signUp({ email, password });
+        if (error) return alert(error.message);
+        const { data: userData } = await supabaseClient.auth.getUser();
+        if (userData?.user) {
+          await supabaseClient.from('profiles').insert({ id: userData.user.id, username: username || email.split('@')[0], role: 'safety' });
+        }
+        alert('注册成功，请登录');
+        renderAuthPage('login');
+      } else {
+        const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        if (error) return alert(error.message);
+        window.location.reload();
+      }
+    });
+    document.getElementById(mode === 'login' ? 'switchToRegister' : 'switchToLogin').addEventListener('click', (e) => {
+      e.preventDefault();
+      renderAuthPage(mode === 'login' ? 'register' : 'login');
+    });
   }
-  // 为节约篇幅，省略登录页面代码，实际请保留之前完整的登录页面代码
 
-  function renderApp() { if (!userProfile) return; if (userProfile.role === 'admin') renderAdminUI(); else renderSafetyUI(); }
+  function renderApp() {
+    if (!userProfile) return;
+    if (userProfile.role === 'admin') renderAdminUI();
+    else renderSafetyUI();
+  }
 
-  // ================= 安全员界面 (不变) =================
-  function renderSafetyUI() { /* 保持原有安全员界面代码 */ }
-  async function renderSafetyPage(page) { /* 保持原有代码 */ }
+  // ================= 安全员UI (保持之前完整代码，此处略，实际请复制之前的安全员部分) =================
+  function renderSafetyUI() { /* ... 完整安全员代码 ... */ }
+  async function renderSafetyPage(page) { /* ... 完整安全员代码 ... */ }
+  function renderRecordCard(record) { /* ... */ }
+  function attachRecordEvents() { /* ... */ }
+  function compressImage(file, maxWidth = 600, quality = 0.6) { /* ... */ }
 
-  // ================= 管理员界面 (重点改造报告页) =================
+  // ================= 管理员 UI (补全所有页面) =================
   function renderAdminUI() {
     document.getElementById('app').innerHTML = `
       <div class="status-bar"><span>🛡️ 管理员 ${userProfile.username}</span><button id="logoutBtn">退出</button></div>
@@ -115,8 +168,59 @@
 
   async function renderAdminPage(page) {
     const content = document.getElementById('adminContent');
-    if (page === 'overview') { /* 保持原有总览代码 */ }
-    else if (page === 'users') { /* 保持原有用户管理代码 */ }
+    if (page === 'overview') {
+      const { data: allRisks } = await supabaseClient.from('risks').select('*');
+      const confirmed = allRisks?.filter(r => r.status === 'confirmed' || r.status === 'fixed') || [];
+      let totalConfirmed = 0, typeCount = {};
+      confirmed.forEach(r => {
+        (r.confirmed_risks || []).forEach(idx => {
+          const risk = r.ai_result?.risks?.[idx];
+          if (risk) { typeCount[risk.type] = (typeCount[risk.type]||0)+1; totalConfirmed++; }
+        });
+      });
+      content.innerHTML = `
+        <h3>📊 全项目累计统计</h3>
+        <div class="stats-grid">
+          <div class="stat-box"><div class="number">${allRisks?.length || 0}</div>累计分析次数</div>
+          <div class="stat-box"><div class="number">${totalConfirmed}</div>累计确认隐患</div>
+        </div>
+        <div class="card"><h4>隐患类型分布</h4><div class="chart-container"><canvas id="adminTypeChart"></canvas></div></div>
+        <button class="btn btn-outline" id="exportCsvBtn" style="margin-top:10px;">📥 导出全部数据 (CSV)</button>
+      `;
+      if (totalConfirmed > 0) new Chart(document.getElementById('adminTypeChart'), { type: 'pie', data: { labels: Object.keys(typeCount), datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }] } });
+      document.getElementById('exportCsvBtn').addEventListener('click', () => exportDetailedCSV(allRisks || []));
+    }
+    else if (page === 'users') {
+      const { data: profiles } = await supabaseClient.from('profiles').select('*');
+      const { data: allRisks } = await supabaseClient.from('risks').select('*');
+      let rows = '';
+      profiles?.forEach(p => {
+        const userRisks = allRisks?.filter(r => r.user_id === p.id) || [];
+        const confCount = userRisks.reduce((acc, r) => acc + (r.confirmed_risks?.length || 0), 0);
+        rows += `<tr><td>${p.username} (${p.role})</td><td>${userRisks.length}</td><td>${confCount}</td><td>
+          <button class="btn btn-sm btn-outline view-user-data" data-uid="${p.id}">查看</button>
+          <button class="btn btn-sm btn-outline export-user-csv" data-uid="${p.id}" style="margin-left:4px;">导出CSV</button>
+          <button class="btn btn-sm btn-danger delete-user-data" data-uid="${p.id}" style="margin-left:4px;">删除</button>
+        </td></tr>`;
+      });
+      content.innerHTML = `
+        <h3>👥 用户管理</h3>
+        <table class="user-table"><thead><tr><th>用户</th><th>分析次数</th><th>确认隐患</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>
+        <div id="userDetail"></div>
+      `;
+      document.querySelectorAll('.view-user-data').forEach(btn => btn.onclick = () => showUserData(btn.dataset.uid));
+      document.querySelectorAll('.export-user-csv').forEach(btn => btn.onclick = async () => {
+        const uid = btn.dataset.uid;
+        const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', uid).order('upload_time', { ascending: false });
+        exportDetailedCSV(risks || []);
+      });
+      document.querySelectorAll('.delete-user-data').forEach(btn => btn.onclick = async () => {
+        if (!confirm('确定删除该用户所有数据？')) return;
+        await supabaseClient.from('risks').delete().eq('user_id', btn.dataset.uid);
+        addLog('删除数据', `管理员删除用户 ${btn.dataset.uid} 的数据`);
+        renderAdminPage('users');
+      });
+    }
     else if (page === 'report') {
       content.innerHTML = `
         <h3>📄 生成专业报告</h3>
@@ -131,10 +235,16 @@
       `;
       document.getElementById('genReportBtn').addEventListener('click', generateReport);
     }
-    else if (page === 'logs') { /* 保持原有日志代码 */ }
+    else if (page === 'logs') {
+      const { data: logs } = await supabaseClient.from('logs').select('*').order('created_at', { ascending: false }).limit(100);
+      let html = '<h3>📜 操作日志</h3>';
+      if (!logs || logs.length === 0) html += '<div class="empty-state">暂无日志</div>';
+      else logs.forEach(l => html += `<div class="log-entry"><strong>${l.username}</strong> ${l.action} - ${l.detail} <span style="float:right;">${new Date(l.created_at).toLocaleString()}</span></div>`);
+      content.innerHTML = html;
+    }
   }
 
-  // ---------- 报告生成核心 ----------
+  // ---------- 报告生成 (含保存与重新生成) ----------
   async function generateReport() {
     const type = document.getElementById('reportType').value;
     const monthVal = document.getElementById('reportMonth').value;
@@ -142,16 +252,13 @@
     const [year, month] = monthVal.split('-').map(Number);
     const periodLabel = type === 'monthly' ? `${year}年${month}月` : `${year}年第${Math.ceil(month/3)}季度`;
 
-    // 显示加载状态
     const preview = document.getElementById('reportPreview');
     preview.style.display = 'block';
     preview.innerHTML = '<p>正在收集数据并生成AI分析…</p>';
 
-    // 1. 获取数据
     const { data: allRisks } = await supabaseClient.from('risks').select('*');
     if (!allRisks) { preview.innerHTML = '<p style="color:red;">数据加载失败</p>'; return; }
 
-    // 根据周期筛选记录
     const filtered = allRisks.filter(r => {
       const d = new Date(r.upload_time);
       if (type === 'monthly') return d.getFullYear() === year && (d.getMonth()+1) === month;
@@ -161,8 +268,6 @@
       }
     });
     const confirmed = filtered.filter(r => r.status === 'confirmed' || r.status === 'fixed');
-
-    // 统计
     const totalAnalysis = filtered.length;
     const totalConfirmedRisks = confirmed.reduce((acc, r) => acc + (r.confirmed_risks?.length || 0), 0);
     const typeCount = {};
@@ -186,9 +291,8 @@
       if (r.status === 'confirmed' || r.status === 'fixed') userStats[r.username].confirmed += (r.confirmed_risks?.length || 0);
     });
 
-    // 获取上月/上季度数据用于对比
-    let prevPeriodLabel = '';
-    let prevData = null;
+    // 上期对比
+    let prevPeriodLabel = '', prevData = null;
     if (type === 'monthly') {
       const prevMonth = month === 1 ? 12 : month-1;
       const prevYear = month === 1 ? year-1 : year;
@@ -210,7 +314,6 @@
     }
     const prevConfirmed = prevData ? prevData.filter(r => r.status === 'confirmed' || r.status === 'fixed').reduce((acc, r) => acc + (r.confirmed_risks?.length || 0), 0) : 0;
 
-    // 2. 构造统计对象发给AI
     const statsForAI = {
       period: periodLabel,
       totalAnalysis,
@@ -223,7 +326,6 @@
       change: prevConfirmed > 0 ? ((totalConfirmedRisks - prevConfirmed) / prevConfirmed * 100).toFixed(1) + '%' : '无历史数据'
     };
 
-    // 3. 调用 Edge Function 生成摘要
     let summary = '';
     try {
       const { data: { session } } = await supabaseClient.auth.getSession();
@@ -241,7 +343,14 @@
       console.error(err);
     }
 
-    // 4. 渲染预览页面
+    // 存储当前报告数据到变量，便于保存和重新生成
+    window.currentReportData = { statsForAI, filtered, confirmed, summary, periodLabel, type };
+    renderReportPreview();
+  }
+
+  function renderReportPreview() {
+    const { statsForAI, summary, periodLabel } = window.currentReportData;
+    const preview = document.getElementById('reportPreview');
     preview.innerHTML = `
       <h4>📋 ${periodLabel} 安全报告</h4>
       <div class="report-section">
@@ -249,67 +358,70 @@
         <p style="white-space:pre-wrap;margin:10px 0;">${summary}</p>
       </div>
       <div class="stats-grid">
-        <div class="stat-box"><div class="number">${totalAnalysis}</div>分析次数</div>
-        <div class="stat-box"><div class="number">${totalConfirmedRisks}</div>确认隐患数</div>
+        <div class="stat-box"><div class="number">${statsForAI.totalAnalysis}</div>分析次数</div>
+        <div class="stat-box"><div class="number">${statsForAI.totalConfirmedRisks}</div>确认隐患数</div>
       </div>
-      <p>与${prevPeriodLabel || '上一周期'}对比：隐患数量变化 ${statsForAI.change}</p>
+      <p>与${statsForAI.previousPeriod || '上一周期'}对比：隐患数量变化 ${statsForAI.change}</p>
       <div class="report-buttons">
-        <button class="btn btn-success" id="exportExcelBtn">📥 导出 Excel (.xlsx)</button>
-        <button class="btn btn-outline" id="exportWordBtn">📄 导出 Word (.doc)</button>
+        <button class="btn btn-success" id="exportExcelBtn">📥 导出 Excel</button>
+        <button class="btn btn-outline" id="exportWordBtn">📄 导出 Word</button>
+        <button class="btn btn-outline" id="saveReportBtn">💾 保存报告至云端</button>
+        <button class="btn btn-sm" id="regenerateBtn">🔄 重新生成</button>
       </div>
     `;
 
-    // 绑定导出事件
-    document.getElementById('exportExcelBtn').addEventListener('click', () => exportReportExcel(statsForAI, filtered, confirmed, summary, periodLabel));
-    document.getElementById('exportWordBtn').addEventListener('click', () => exportReportWord(statsForAI, summary, periodLabel, filtered));
+    document.getElementById('exportExcelBtn').addEventListener('click', () => {
+      const { statsForAI, filtered, confirmed, summary, periodLabel } = window.currentReportData;
+      exportReportExcel(statsForAI, filtered, confirmed, summary, periodLabel);
+    });
+    document.getElementById('exportWordBtn').addEventListener('click', () => {
+      const { statsForAI, summary, periodLabel, filtered } = window.currentReportData;
+      exportReportWord(statsForAI, summary, periodLabel, filtered);
+    });
+    document.getElementById('saveReportBtn').addEventListener('click', async () => {
+      const { statsForAI, summary, periodLabel, type } = window.currentReportData;
+      const { error } = await supabaseClient.from('reports').insert({
+        user_id: currentUser.id,
+        username: userProfile.username,
+        period: periodLabel,
+        report_type: type,
+        stats: statsForAI,
+        summary: summary,
+        created_at: new Date().toISOString()
+      });
+      if (error) alert('保存失败：' + error.message);
+      else alert('报告已保存至云端！');
+    });
+    document.getElementById('regenerateBtn').addEventListener('click', () => {
+      generateReport(); // 重新执行生成流程
+    });
   }
 
-  // 导出 Excel (含多个工作表)
+  // 导出 Excel 和 Word 函数 (与之前相同)
   function exportReportExcel(stats, allRecords, confirmed, summary, period) {
     const wb = XLSX.utils.book_new();
-
-    // 工作表1：总览
-    const overviewData = [
-      ['指标', '数值'],
-      ['报告周期', period],
-      ['总分析次数', stats.totalAnalysis],
-      ['确认隐患总数', stats.totalConfirmedRisks],
-      ['与上期对比变化', stats.change],
-      ['AI摘要', summary]
-    ];
+    const overviewData = [['指标', '数值'], ['报告周期', period], ['总分析次数', stats.totalAnalysis], ['确认隐患总数', stats.totalConfirmedRisks], ['与上期对比变化', stats.change], ['AI摘要', summary]];
     const ws1 = XLSX.utils.aoa_to_sheet(overviewData);
     XLSX.utils.book_append_sheet(wb, ws1, '总览');
-
-    // 工作表2：隐患类型统计
     const typeData = [['隐患类型', '数量'], ...Object.entries(stats.typeDistribution)];
     const ws2 = XLSX.utils.aoa_to_sheet(typeData);
     XLSX.utils.book_append_sheet(wb, ws2, '隐患类型');
-
-    // 工作表3：风险等级统计
     const sevData = [['风险等级', '数量'], ...Object.entries(stats.severityDistribution)];
     const ws3 = XLSX.utils.aoa_to_sheet(sevData);
     XLSX.utils.book_append_sheet(wb, ws3, '风险等级');
-
-    // 工作表4：人员上报统计
     const userData = [['用户', '分析次数', '确认隐患数'], ...Object.entries(stats.users).map(([u, d]) => [u, d.analysis, d.confirmed])];
     const ws4 = XLSX.utils.aoa_to_sheet(userData);
     XLSX.utils.book_append_sheet(wb, ws4, '人员上报');
-
-    // 工作表5：详细隐患清单
     const detailData = [['记录ID', '用户', '上传时间', '状态', '隐患类型', '风险等级', '描述', '整改建议']];
     confirmed.forEach(r => {
       const risks = r.ai_result?.risks || [];
-      risks.forEach(risk => {
-        detailData.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, risk.type, risk.severity, risk.description, risk.suggestion]);
-      });
+      risks.forEach(risk => detailData.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, risk.type, risk.severity, risk.description, risk.suggestion]));
     });
     const ws5 = XLSX.utils.aoa_to_sheet(detailData);
     XLSX.utils.book_append_sheet(wb, ws5, '隐患明细');
-
     XLSX.writeFile(wb, `安全报告_${period}.xlsx`);
   }
 
-  // 导出 Word (简单 HTML 转 Word)
   function exportReportWord(stats, summary, period, records) {
     const htmlContent = `
       <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
@@ -327,7 +439,7 @@
         <h2>人员上报情况</h2>
         <table border="1"><tr><th>用户</th><th>分析次数</th><th>确认隐患</th></tr>${Object.entries(stats.users).map(([u,d]) => `<tr><td>${u}</td><td>${d.analysis}</td><td>${d.confirmed}</td></tr>`).join('')}</table>
         <h2>详细隐患清单</h2>
-        <table border="1"><tr><th>上传时间</th><th>用户</th><th>隐患类型</th><th>等级</th><th>描述</th><th>建议</th></tr>${records.filter(r => r.status === 'confirmed' || r.status === 'fixed').flatMap(r => (r.ai_result?.risks || []).map(risk => `<tr><td>${new Date(r.upload_time).toLocaleString()}</td><td>${r.username}</td><td>${risk.type}</td><td>${risk.severity}</td><td>${risk.description}</td><td>${risk.suggestion}</td></tr>`)).join('')}</table>
+        <table border="1"><tr><th>上传时间</th><th>用户</th><th>隐患类型</th><th>等级</th><th>描述</th><th>建议</th></tr>${records.filter(r => r.status==='confirmed'||r.status==='fixed').flatMap(r => (r.ai_result?.risks||[]).map(risk => `<tr><td>${new Date(r.upload_time).toLocaleString()}</td><td>${r.username}</td><td>${risk.type}</td><td>${risk.severity}</td><td>${risk.description}</td><td>${risk.suggestion}</td></tr>`)).join('')}</table>
       </body></html>
     `;
     const blob = new Blob(['\ufeff' + htmlContent], { type: 'application/msword' });
@@ -336,9 +448,57 @@
     URL.revokeObjectURL(url);
   }
 
-  // 其余函数保持不变 (addLog, exportDetailedCSV 等)
-  // 请确保已包含之前所有安全员、管理员功能函数
+  // 公用函数 (addLog, showUserData, exportDetailedCSV 等)
+  async function addLog(action, detail) {
+    await supabaseClient.from('logs').insert({
+      user_id: currentUser.id,
+      username: userProfile.username,
+      action,
+      detail,
+      created_at: new Date().toISOString()
+    });
+  }
 
+  function exportDetailedCSV(records) {
+    if (!records || records.length === 0) return alert('无数据可导出');
+    const headers = ['记录ID', '用户', '上传时间', '状态', '隐患类型', '风险等级', '隐患描述', '整改建议'];
+    const rows = [];
+    records.forEach(r => {
+      const risks = r.ai_result?.risks || [];
+      if (risks.length === 0) rows.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, '', '', '', '']);
+      else risks.forEach(risk => rows.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, risk.type, risk.severity, risk.description, risk.suggestion]));
+    });
+    let csv = headers.join(',') + '\n';
+    rows.forEach(row => csv += row.map(v => `"${v}"`).join(',') + '\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `safety_detail_${Date.now()}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function showUserData(uid) {
+    const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', uid).single();
+    const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', uid).order('upload_time', { ascending: false });
+    const detailDiv = document.getElementById('userDetail');
+    let html = `<div class="card"><h4>📋 ${profile?.username} 的数据</h4>
+      <p>累计分析：${risks?.length || 0} | 确认隐患：${risks?.reduce((acc, r) => acc + (r.confirmed_risks?.length||0), 0)}</p>
+      <button class="btn btn-sm btn-danger" id="deleteUserDataBtn" data-uid="${uid}">删除所有数据</button>
+      <button class="btn btn-sm btn-outline" id="exportUserCsvBtn" data-uid="${uid}" style="margin-left:8px;">📥 导出 CSV</button>
+      <hr>`;
+    risks?.forEach(r => html += renderRecordCard(r));
+    html += '</div>';
+    detailDiv.innerHTML = html;
+    document.getElementById('deleteUserDataBtn').addEventListener('click', async () => {
+      if (!confirm('确定删除？')) return;
+      await supabaseClient.from('risks').delete().eq('user_id', uid);
+      addLog('删除数据', `管理员删除用户 ${uid} 全部数据`);
+      detailDiv.innerHTML = '<p>数据已删除</p>';
+    });
+    document.getElementById('exportUserCsvBtn').addEventListener('click', () => exportDetailedCSV(risks || []));
+    attachRecordEvents();
+  }
+
+  // 请确保安全员相关函数（renderSafetyUI, renderSafetyPage, renderRecordCard, compressImage, attachRecordEvents）已完整保留
   init();
 </script>
 </body>

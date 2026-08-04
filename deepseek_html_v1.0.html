@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>AI+管网安全助手 云端版</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fb; color: #2c3e50; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 12px; }
+    .app-container { width: 100%; max-width: 520px; background: #ffffff; border-radius: 24px; box-shadow: 0 12px 40px rgba(0,0,0,0.08); overflow: hidden; display: flex; flex-direction: column; min-height: 90vh; }
+    .status-bar { background: #1e3b5a; color: white; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
+    .status-bar button { background: rgba(255,255,255,0.2); border: none; color: white; padding: 5px 12px; border-radius: 20px; font-size: 13px; cursor: pointer; }
+    .main-content { flex: 1; padding: 20px; overflow-y: auto; }
+    .bottom-nav { display: flex; border-top: 1px solid #e9ecef; background: white; padding: 6px 0; justify-content: space-around; flex-wrap: wrap; }
+    .bottom-nav .nav-item { display: flex; flex-direction: column; align-items: center; font-size: 11px; color: #7f8c8d; padding: 6px 8px; cursor: pointer; border-radius: 12px; transition: 0.2s; min-width: 55px; }
+    .bottom-nav .nav-item.active { color: #1e3b5a; font-weight: 600; background: #eef2f6; }
+    .bottom-nav .nav-item .icon { font-size: 20px; margin-bottom: 2px; }
+    .card { background: white; border-radius: 16px; padding: 18px; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.04); border: 1px solid #f0f0f0; }
+    .card h3 { font-size: 18px; margin-bottom: 12px; color: #1e3b5a; }
+    .btn { display: inline-block; padding: 10px 20px; border-radius: 30px; border: none; font-weight: 600; font-size: 15px; cursor: pointer; background: #1e3b5a; color: white; text-align: center; transition: 0.2s; }
+    .btn:active { opacity: 0.8; }
+    .btn-outline { background: white; color: #1e3b5a; border: 1.5px solid #1e3b5a; }
+    .btn-sm { padding: 6px 14px; font-size: 13px; }
+    .btn-success { background: #27ae60; }
+    .btn-danger { background: #e74c3c; }
+    .image-preview { width: 100%; max-height: 240px; object-fit: contain; border-radius: 12px; background: #f0f2f5; margin: 10px 0; display: none; }
+    .risk-item { background: #f8f9fa; border-radius: 14px; padding: 14px; margin-bottom: 12px; border-left: 5px solid #e67e22; }
+    .risk-item.severity-high { border-left-color: #e74c3c; }
+    .risk-item.severity-medium { border-left-color: #f39c12; }
+    .risk-item.severity-low { border-left-color: #27ae60; }
+    .risk-tag { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; margin-right: 8px; }
+    .tag-high { background: #ffeaea; color: #c0392b; }
+    .tag-medium { background: #fef3e2; color: #d68910; }
+    .tag-low { background: #eafaf1; color: #1e8449; }
+    .action-buttons { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .log-entry { font-size: 13px; padding: 8px 0; border-bottom: 1px solid #ececec; color: #555; }
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 15px 0; }
+    .stat-box { background: #f0f4f8; padding: 15px; border-radius: 16px; text-align: center; }
+    .stat-box .number { font-size: 28px; font-weight: 700; color: #1e3b5a; }
+    .chart-container { width: 100%; height: 220px; margin: 10px 0 20px; }
+    .login-form { padding: 30px 20px; }
+    .login-form input { width: 100%; padding: 12px 16px; margin: 8px 0 16px; border-radius: 12px; border: 1px solid #ddd; font-size: 16px; }
+    .empty-state { text-align: center; padding: 30px; color: #95a5a6; }
+    .user-table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+    .user-table th, .user-table td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 14px; }
+    .user-table th { background: #f9f9f9; font-weight: 600; }
+  </style>
+</head>
+<body>
+<div class="app-container" id="app"></div>
+
+<script>
+  // ==================== 您的 Supabase 配置 ====================
+  const SUPABASE_URL = 'https://xnebqywzurzwpfzlzyvw.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_RbCAWLM9oKmvOEDdt2ybQg_JQK8jo67';
+  const EDGE_FUNCTION = 'https://xnebqywzurzwpfzlzyvw.supabase.co/functions/v1/analyze-image';
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  let currentUser = null;
+  let userProfile = null;
+
+  // ---------- 初始化 ----------
+  async function init() {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) {
+      currentUser = session.user;
+      const { data: profile } = await supabase.from('profiles').select('*').eq('id', currentUser.id).single();
+      userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
+      if (!profile) {
+        // 自动创建 profile
+        await supabase.from('profiles').insert({
+          id: currentUser.id,
+          username: currentUser.email?.split('@')[0] || 'unknown',
+          role: 'safety'
+        });
+      }
+      renderApp();
+    } else {
+      renderAuthPage('login');
+    }
+  }
+
+  // ---------- 认证页面 ----------
+  function renderAuthPage(mode = 'login') {
+    const html = `
+      <div class="status-bar"><span>🔐 AI+管网安全助手</span></div>
+      <div class="main-content login-form">
+        <h2 style="text-align:center; margin-bottom:20px;">${mode === 'login' ? '登录' : '注册'}</h2>
+        <input type="email" id="authEmail" placeholder="邮箱" value="${mode === 'login' ? 'ghzhangsan01@163.com' : ''}">
+        <input type="password" id="authPassword" placeholder="密码" value="${mode === 'login' ? '123456' : ''}">
+        ${mode === 'register' ? '<input type="text" id="authUsername" placeholder="用户名" value="">' : ''}
+        <button class="btn" style="width:100%; margin-top:10px;" id="authBtn">${mode === 'login' ? '登 录' : '注 册'}</button>
+        <p style="text-align:center; margin-top:16px;">
+          ${mode === 'login' ? "还没有账号？ <a href='#' id='switchToRegister'>注册</a>" : "已有账号？ <a href='#' id='switchToLogin'>登录</a>"}
+        </p>
+        <p style="font-size:12px; color:#7f8c8d; text-align:center;">测试账号：ghzhangsan01@163.com / 123456<br>管理员请使用 admin@safety.ai（需在数据库设为admin角色）</p>
+      </div>
+    `;
+    document.getElementById('app').innerHTML = html;
+    document.getElementById('authBtn').addEventListener('click', async () => {
+      const email = document.getElementById('authEmail').value.trim();
+      const password = document.getElementById('authPassword').value;
+      if (mode === 'register') {
+        const username = document.getElementById('authUsername').value.trim();
+        const { error } = await supabase.auth.signUp({ email, password });
+        if (error) return alert(error.message);
+        // 创建 profile
+        const { data: userData } = await supabase.auth.getUser();
+        if (userData?.user) {
+          await supabase.from('profiles').insert({ id: userData.user.id, username: username || email.split('@')[0], role: 'safety' });
+        }
+        alert('注册成功，请登录（若需管理员权限请联系管理员修改）');
+        renderAuthPage('login');
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) return alert(error.message);
+        window.location.reload();
+      }
+    });
+    document.getElementById(mode === 'login' ? 'switchToRegister' : 'switchToLogin').addEventListener('click', (e) => {
+      e.preventDefault();
+      renderAuthPage(mode === 'login' ? 'register' : 'login');
+    });
+  }
+
+  // ---------- 主渲染 ----------
+  function renderApp() {
+    if (!userProfile) return;
+    if (userProfile.role === 'admin') renderAdminUI();
+    else renderSafetyUI();
+  }
+
+  // ===================== 安全员界面 =====================
+  function renderSafetyUI() {
+    document.getElementById('app').innerHTML = `
+      <div class="status-bar"><span>👷 ${userProfile.username}</span><button id="logoutBtn">退出</button></div>
+      <div class="main-content" id="safetyContent"></div>
+      <div class="bottom-nav">
+        <div class="nav-item active" data-page="upload"><span class="icon">📷</span>拍照</div>
+        <div class="nav-item" data-page="records"><span class="icon">📋</span>记录</div>
+        <div class="nav-item" data-page="stats"><span class="icon">📊</span>统计</div>
+      </div>
+    `;
+    document.getElementById('logoutBtn').addEventListener('click', async () => { await supabase.auth.signOut(); window.location.reload(); });
+    document.querySelectorAll('.bottom-nav .nav-item').forEach(item => {
+      item.addEventListener('click', function() {
+        document.querySelectorAll('.bottom-nav .nav-item').forEach(n => n.classList.remove('active'));
+        this.classList.add('active');
+        renderSafetyPage(this.dataset.page);
+      });
+    });
+    renderSafetyPage('upload');
+  }
+
+  async function renderSafetyPage(page) {
+    const content = document.getElementById('safetyContent');
+    if (page === 'upload') {
+      content.innerHTML = `
+        <div class="card"><h3>📸 现场拍照</h3>
+          <input type="file" id="imageInput" accept="image/*" capture="environment">
+          <img id="previewImage" class="image-preview">
+          <button class="btn" id="analyzeBtn" style="width:100%; margin-top:12px;" disabled>🔍 AI隐患分析</button>
+          <div id="analysisResult" style="margin-top:16px;"></div>
+        </div>
+      `;
+      const fi = document.getElementById('imageInput'), pr = document.getElementById('previewImage'), ab = document.getElementById('analyzeBtn');
+      let curFile = null, curDataUrl = null;
+      fi.addEventListener('change', (e) => {
+        const file = e.target.files[0]; if(!file) return;
+        curFile = file;
+        const reader = new FileReader();
+        reader.onload = (ev) => { curDataUrl = ev.target.result; pr.src = curDataUrl; pr.style.display='block'; ab.disabled = false; };
+        reader.readAsDataURL(file);
+      });
+      ab.addEventListener('click', async () => {
+        if(!curFile || !curDataUrl) return;
+        ab.disabled = true; ab.textContent = '⏳ 分析中...';
+        document.getElementById('analysisResult').innerHTML = '<p>调用千问视觉模型分析…</p>';
+        try {
+          // 上传到 Storage
+          const fileName = `${currentUser.id}/${Date.now()}.jpg`;
+          await supabase.storage.from('risks-photos').upload(fileName, curFile);
+          const { data: urlData } = supabase.storage.from('risks-photos').getPublicUrl(fileName);
+          // 调用 Edge Function
+          const base64 = curDataUrl.split(',')[1];
+          const resp = await fetch(EDGE_FUNCTION, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${currentUser.access_token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_base64: base64 })
+          });
+          if (!resp.ok) throw new Error(await resp.text());
+          const { analysis, error } = await resp.json();
+          if (error) throw new Error(error);
+          // 保存记录
+          const record = {
+            id: Date.now(),
+            user_id: currentUser.id,
+            username: userProfile.username,
+            upload_time: new Date().toISOString(),
+            image_path: urlData.publicUrl,
+            ai_result: analysis,
+            status: 'pending',
+          };
+          await supabase.from('risks').insert(record);
+          addLog('拍照分析', `隐患数 ${analysis.risks.length}`);
+          let riskHtml = '';
+          analysis.risks.forEach(r => riskHtml += `<div class="risk-item severity-${r.severity==='高'?'high':(r.severity==='中'?'medium':'low')}"><span class="risk-tag tag-${r.severity==='高'?'high':(r.severity==='中'?'medium':'low')}">${r.severity}风险</span><strong>${r.type}</strong><p>${r.description}</p><p>📝 ${r.suggestion}</p></div>`);
+          document.getElementById('analysisResult').innerHTML = riskHtml || '<p style="color:green;">✅ 未发现隐患</p>';
+          ab.textContent = '🔍 重新分析'; ab.disabled = false;
+        } catch(e) {
+          document.getElementById('analysisResult').innerHTML = `<p style="color:red;">失败：${e.message}</p>`;
+          ab.disabled = false; ab.textContent = '🔍 开始分析';
+        }
+      });
+    } else if (page === 'records') {
+      const { data: risks } = await supabase.from('risks').select('*').eq('user_id', currentUser.id).order('upload_time', { ascending: false });
+      let html = '<h3>📋 我的记录</h3>';
+      if (!risks || risks.length === 0) html += '<div class="empty-state">暂无记录</div>';
+      else risks.forEach(r => html += renderRecordCard(r));
+      content.innerHTML = html;
+      attachRecordEvents();
+    } else if (page === 'stats') {
+      const { data: risks } = await supabase.from('risks').select('*').eq('user_id', currentUser.id);
+      const confirmed = risks?.filter(r => r.status === 'confirmed' || r.status === 'fixed') || [];
+      let totalConfirmed = 0, typeCount = {}, severities = {高:0,中:0,低:0};
+      confirmed.forEach(r => {
+        (r.confirmed_risks || []).forEach(idx => {
+          const risk = r.ai_result?.risks?.[idx];
+          if (risk) {
+            typeCount[risk.type] = (typeCount[risk.type]||0)+1;
+            severities[risk.severity] = (severities[risk.severity]||0)+1;
+            totalConfirmed++;
+          }
+        });
+      });
+      content.innerHTML = `
+        <h3>📊 个人统计</h3>
+        <div class="stats-grid">
+          <div class="stat-box"><div class="number">${risks?.length || 0}</div>累计分析次数</div>
+          <div class="stat-box"><div class="number">${totalConfirmed}</div>累计确认隐患</div>
+        </div>
+        <div class="card"><h4>隐患类型分布</h4><div class="chart-container"><canvas id="typeChart"></canvas></div></div>
+        <div class="card"><h4>风险等级</h4><div class="chart-container"><canvas id="severityChart"></canvas></div></div>
+      `;
+      if (totalConfirmed > 0) {
+        new Chart(document.getElementById('typeChart'), { type: 'pie', data: { labels: Object.keys(typeCount), datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }] } });
+        new Chart(document.getElementById('severityChart'), { type: 'bar', data: { labels: ['高','中','低'], datasets: [{ data: [severities['高']||0, severities['中']||0, severities['低']||0], backgroundColor: ['#e74c3c','#f39c12','#27ae60'] }] } });
+      }
+    }
+  }
+
+  function renderRecordCard(record) {
+    const statusMap = { pending:'⏳待处理', confirmed:'✅已确认', false_alarm:'❌误报', fixed:'🔧已整改' };
+    const risks = record.ai_result?.risks || [];
+    let riskHtml = '';
+    risks.forEach((risk, idx) => {
+      const isConfirmed = record.confirmed_risks?.includes(idx);
+      riskHtml += `<div class="risk-item severity-${risk.severity==='高'?'high':(risk.severity==='中'?'medium':'low')}">
+        <span class="risk-tag tag-${risk.severity==='高'?'high':(risk.severity==='中'?'medium':'low')}">${risk.severity}风险</span>
+        <strong>${risk.type}</strong><p>${risk.description}</p><p>📝 ${risk.suggestion}</p>
+        ${record.status === 'pending' ? `<div class="action-buttons"><button class="btn btn-sm btn-success confirm-risk" data-rid="${record.id}" data-idx="${idx}">✔ 确认</button><button class="btn btn-sm btn-outline false-alarm" data-rid="${record.id}" data-idx="${idx}">⚠ 误报</button></div>` : (isConfirmed ? '<span style="color:green;">已确认</span>' : '')}
+      </div>`;
+    });
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;"><span>📅 ${new Date(record.upload_time).toLocaleString()}</span><span>${statusMap[record.status]}</span></div>
+      ${record.image_path ? `<img src="${record.image_path}" style="width:100%;max-height:150px;object-fit:cover;border-radius:10px;margin:8px 0;">` : ''}
+      ${riskHtml}
+      ${record.status === 'confirmed' || record.status === 'fixed' ? `<div style="margin-top:10px;">${record.status === 'confirmed' ? `<button class="btn btn-sm btn-outline upload-fix" data-rid="${record.id}">📎 整改照片</button>` : ''}${record.fix_image_path ? `<img src="${record.fix_image_path}" style="width:100%;max-height:120px;border-radius:8px;">` : ''}${record.fix_desc ? `<p>📄 ${record.fix_desc}</p>` : ''}</div>` : ''}
+    </div>`;
+  }
+
+  function attachRecordEvents() {
+    document.querySelectorAll('.confirm-risk').forEach(btn => {
+      btn.onclick = async function() {
+        const rid = +this.dataset.rid, idx = +this.dataset.idx;
+        const { data: rec } = await supabase.from('risks').select('*').eq('id', rid).single();
+        if (rec && rec.status === 'pending') {
+          let confirmed = rec.confirmed_risks || [];
+          if (!confirmed.includes(idx)) confirmed.push(idx);
+          const total = rec.ai_result.risks.length;
+          const newStatus = (confirmed.length + (rec.false_alarm_risks?.length || 0)) >= total ? 'confirmed' : 'pending';
+          await supabase.from('risks').update({ confirmed_risks: confirmed, status: newStatus }).eq('id', rid);
+          addLog('确认隐患', `记录${rid} 确认${idx}`);
+          renderSafetyPage('records');
+        }
+      };
+    });
+    document.querySelectorAll('.false-alarm').forEach(btn => {
+      btn.onclick = async function() {
+        const rid = +this.dataset.rid, idx = +this.dataset.idx;
+        const { data: rec } = await supabase.from('risks').select('*').eq('id', rid).single();
+        if (rec && rec.status === 'pending') {
+          let falseAlarm = rec.false_alarm_risks || [];
+          if (!falseAlarm.includes(idx)) falseAlarm.push(idx);
+          const total = rec.ai_result.risks.length;
+          const newStatus = (falseAlarm.length + (rec.confirmed_risks?.length || 0)) >= total ? (rec.confirmed_risks?.length > 0 ? 'confirmed' : 'false_alarm') : 'pending';
+          await supabase.from('risks').update({ false_alarm_risks: falseAlarm, status: newStatus }).eq('id', rid);
+          addLog('标记误报', `记录${rid} 误报${idx}`);
+          renderSafetyPage('records');
+        }
+      };
+    });
+    document.querySelectorAll('.upload-fix').forEach(btn => {
+      btn.onclick = async function() {
+        const rid = +this.dataset.rid;
+        const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*';
+        input.onchange = async (e) => {
+          const file = e.target.files[0]; if(!file) return;
+          const fileName = `fix/${rid}_${Date.now()}.jpg`;
+          await supabase.storage.from('fix-photos').upload(fileName, file);
+          const { data: urlData } = supabase.storage.from('fix-photos').getPublicUrl(fileName);
+          const desc = prompt('整改描述：');
+          await supabase.from('risks').update({ fix_image_path: urlData.publicUrl, fix_desc: desc || '已整改', fix_time: new Date().toISOString(), status: 'fixed' }).eq('id', rid);
+          addLog('上传整改', `记录${rid} 完成整改`);
+          renderSafetyPage('records');
+        };
+        input.click();
+      };
+    });
+  }
+
+  // ===================== 管理员界面 =====================
+  function renderAdminUI() {
+    document.getElementById('app').innerHTML = `
+      <div class="status-bar"><span>🛡️ 管理员 ${userProfile.username}</span><button id="logoutBtn">退出</button></div>
+      <div class="main-content" id="adminContent"></div>
+      <div class="bottom-nav">
+        <div class="nav-item active" data-page="overview"><span class="icon">📊</span>总览</div>
+        <div class="nav-item" data-page="users"><span class="icon">👥</span>用户</div>
+        <div class="nav-item" data-page="report"><span class="icon">📄</span>报告</div>
+        <div class="nav-item" data-page="logs"><span class="icon">📜</span>日志</div>
+      </div>
+    `;
+    document.getElementById('logoutBtn').addEventListener('click', async () => { await supabase.auth.signOut(); window.location.reload(); });
+    document.querySelectorAll('.bottom-nav .nav-item').forEach(item => {
+      item.addEventListener('click', function() {
+        document.querySelectorAll('.bottom-nav .nav-item').forEach(n => n.classList.remove('active'));
+        this.classList.add('active');
+        renderAdminPage(this.dataset.page);
+      });
+    });
+    renderAdminPage('overview');
+  }
+
+  async function renderAdminPage(page) {
+    const content = document.getElementById('adminContent');
+    if (page === 'overview') {
+      const { data: allRisks } = await supabase.from('risks').select('*');
+      const confirmed = allRisks?.filter(r => r.status === 'confirmed' || r.status === 'fixed') || [];
+      let totalConfirmed = 0, typeCount = {};
+      confirmed.forEach(r => {
+        (r.confirmed_risks || []).forEach(idx => {
+          const risk = r.ai_result?.risks?.[idx];
+          if (risk) { typeCount[risk.type] = (typeCount[risk.type]||0)+1; totalConfirmed++; }
+        });
+      });
+      content.innerHTML = `
+        <h3>📊 全项目累计统计</h3>
+        <div class="stats-grid">
+          <div class="stat-box"><div class="number">${allRisks?.length || 0}</div>累计分析次数</div>
+          <div class="stat-box"><div class="number">${totalConfirmed}</div>累计确认隐患</div>
+        </div>
+        <div class="card"><h4>隐患类型分布</h4><div class="chart-container"><canvas id="adminTypeChart"></canvas></div></div>
+        <button class="btn btn-outline" id="exportCsvBtn" style="margin-top:10px;">📥 导出统计数据 (CSV)</button>
+      `;
+      if (totalConfirmed > 0) new Chart(document.getElementById('adminTypeChart'), { type: 'pie', data: { labels: Object.keys(typeCount), datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }] } });
+      document.getElementById('exportCsvBtn').addEventListener('click', () => exportToCSV(allRisks || []));
+    } else if (page === 'users') {
+      const { data: profiles } = await supabase.from('profiles').select('*');
+      const { data: allRisks } = await supabase.from('risks').select('*');
+      let rows = '';
+      profiles?.forEach(p => {
+        const userRisks = allRisks?.filter(r => r.user_id === p.id) || [];
+        const confCount = userRisks.reduce((acc, r) => acc + (r.confirmed_risks?.length || 0), 0);
+        rows += `<tr><td>${p.username} (${p.role})</td><td>${userRisks.length}</td><td>${confCount}</td><td><button class="btn btn-sm btn-outline view-user-data" data-uid="${p.id}">查看数据</button> <button class="btn btn-sm btn-danger delete-user-data" data-uid="${p.id}">删除所有</button></td></tr>`;
+      });
+      content.innerHTML = `
+        <h3>👥 用户管理</h3>
+        <table class="user-table"><thead><tr><th>用户</th><th>分析次数</th><th>确认隐患</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>
+        <div id="userDetail"></div>
+      `;
+      document.querySelectorAll('.view-user-data').forEach(btn => {
+        btn.onclick = () => showUserData(btn.dataset.uid);
+      });
+      document.querySelectorAll('.delete-user-data').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('确定删除该用户所有数据？不可恢复！')) return;
+          await supabase.from('risks').delete().eq('user_id', btn.dataset.uid);
+          addLog('删除数据', `管理员删除用户 ${btn.dataset.uid} 的数据`);
+          renderAdminPage('users');
+        };
+      });
+    } else if (page === 'report') {
+      content.innerHTML = `
+        <h3>📄 生成报告</h3>
+        <div class="card">
+          <label>报告类型：</label><select id="reportType"><option value="monthly">月度</option><option value="quarterly">季度</option></select>
+          <label>选择月份：</label><input type="month" id="reportMonth"><button class="btn" id="genReportBtn">生成预览</button>
+        </div>
+        <div id="reportPreview"></div>
+      `;
+      document.getElementById('genReportBtn').addEventListener('click', async () => {
+        const type = document.getElementById('reportType').value;
+        const mv = document.getElementById('reportMonth').value; if(!mv) return alert('请选择月份');
+        const [y,m] = mv.split('-').map(Number);
+        const { data: allRisks } = await supabase.from('risks').select('*');
+        let filtered = allRisks || [];
+        if (type === 'monthly') {
+          filtered = filtered.filter(r => { const d = new Date(r.upload_time); return d.getFullYear()===y && (d.getMonth()+1)===m; });
+        } else {
+          const qs = Math.floor((m-1)/3)*3;
+          filtered = filtered.filter(r => { const d = new Date(r.upload_time); return d.getFullYear()===y && (d.getMonth()+1)>=qs+1 && (d.getMonth()+1)<=qs+3; });
+        }
+        const conf = filtered.filter(r => r.status === 'confirmed' || r.status === 'fixed');
+        document.getElementById('reportPreview').innerHTML = `<div class="card"><h4>📋 报告</h4><p>确认隐患记录数：<strong>${conf.length}</strong></p><p>总分析数：${filtered.length}</p><button class="btn btn-outline" onclick="window.print()">🖨️ 打印/导出PDF</button></div>`;
+      });
+    } else if (page === 'logs') {
+      const { data: logs } = await supabase.from('logs').select('*').order('created_at', { ascending: false }).limit(100);
+      let html = '<h3>📜 操作日志</h3>';
+      logs?.forEach(l => html += `<div class="log-entry"><strong>${l.username}</strong> ${l.action} - ${l.detail} <span style="float:right;">${new Date(l.created_at).toLocaleString()}</span></div>`);
+      content.innerHTML = html;
+    }
+  }
+
+  async function showUserData(uid) {
+    const { data: profile } = await supabase.from('profiles').select('*').eq('id', uid).single();
+    const { data: risks } = await supabase.from('risks').select('*').eq('user_id', uid).order('upload_time', { ascending: false });
+    const detailDiv = document.getElementById('userDetail');
+    let html = `<div class="card"><h4>📋 ${profile?.username} 的数据</h4>
+      <p>累计分析：${risks?.length || 0} | 确认隐患：${risks?.reduce((acc, r) => acc + (r.confirmed_risks?.length||0), 0)}</p>
+      <button class="btn btn-sm btn-danger" id="deleteUserDataBtn" data-uid="${uid}">删除该用户所有数据</button>
+      <button class="btn btn-sm btn-outline" id="exportUserCsvBtn" data-uid="${uid}" style="margin-left:8px;">📥 导出 CSV</button>
+      <hr>`;
+    risks?.forEach(r => html += renderRecordCard(r));
+    html += '</div>';
+    detailDiv.innerHTML = html;
+    document.getElementById('deleteUserDataBtn').addEventListener('click', async () => {
+      if (!confirm('确定删除？')) return;
+      await supabase.from('risks').delete().eq('user_id', uid);
+      addLog('删除数据', `管理员删除用户 ${uid} 全部数据`);
+      detailDiv.innerHTML = '<p>数据已删除</p>';
+    });
+    document.getElementById('exportUserCsvBtn').addEventListener('click', () => exportToCSV(risks || []));
+    attachRecordEvents();
+  }
+
+  // ---------- 辅助功能 ----------
+  async function addLog(action, detail) {
+    await supabase.from('logs').insert({
+      user_id: currentUser.id,
+      username: userProfile.username,
+      action,
+      detail,
+      created_at: new Date().toISOString()
+    });
+  }
+
+  function exportToCSV(records) {
+    if (!records || records.length === 0) return alert('无数据可导出');
+    const headers = ['ID', '用户', '上传时间', '状态', '隐患数量', '确认数量'];
+    const rows = records.map(r => [
+      r.id,
+      r.username,
+      new Date(r.upload_time).toLocaleString(),
+      r.status,
+      r.ai_result?.risks?.length || 0,
+      r.confirmed_risks?.length || 0
+    ]);
+    let csv = headers.join(',') + '\n';
+    rows.forEach(row => csv += row.join(',') + '\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `safety_export_${Date.now()}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // 启动
+  init();
+</script>
+</body>
+</html>

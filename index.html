@@ -52,7 +52,6 @@
 <div class="app-container" id="app"></div>
 
 <script>
-  // Supabase 配置
   const SUPABASE_URL = 'https://xnebqywzurzwpfzlzyvw.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_RbCAWLM9oKmvOEDdt2ybQg_JQK8jo67';
   const EDGE_FUNCTION = 'https://xnebqywzurzwpfzlzyvw.supabase.co/functions/v1/analyze-image';
@@ -61,7 +60,22 @@
   let currentUser = null;
   let userProfile = null;
 
-  // 初始化
+  // 监听认证状态变化，自动更新 currentUser
+  supabaseClient.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_OUT') {
+      currentUser = null;
+      userProfile = null;
+      renderAuthPage('login');
+    } else if (session) {
+      currentUser = session.user;
+      // 重新加载 profile
+      supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single().then(({ data }) => {
+        userProfile = data || { role: 'safety', username: currentUser.email?.split('@')[0] };
+        renderApp();
+      });
+    }
+  });
+
   async function init() {
     try {
       const { data: { session } } = await supabaseClient.auth.getSession();
@@ -86,7 +100,6 @@
     }
   }
 
-  // 登录/注册页
   function renderAuthPage(mode = 'login') {
     document.getElementById('app').innerHTML = `
       <div class="status-bar"><span>🔐 AI+管网安全助手</span></div>
@@ -180,11 +193,17 @@
         ab.disabled = true; ab.textContent = '⏳ 分析中...';
         document.getElementById('analysisResult').innerHTML = '<p>调用千问视觉模型分析…</p>';
         try {
+          // 1. 确保获取最新 session 和 token
+          const { data: { session } } = await supabaseClient.auth.getSession();
+          if (!session) {
+            throw new Error('登录已过期，请重新登录');
+          }
+          const token = session.access_token;
           const base64 = curDataUrl.split(',')[1];
           const resp = await fetch(EDGE_FUNCTION, {
             method: 'POST',
             headers: {
-              'Authorization': `Bearer ${currentUser.access_token}`,
+              'Authorization': `Bearer ${token}`,
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({ image_base64: base64 })
@@ -451,7 +470,6 @@
     });
   }
 
-  // 导出详细 CSV（包含每条隐患的具体信息）
   function exportDetailedCSV(records) {
     if (!records || records.length === 0) return alert('无数据可导出');
     const headers = ['记录ID', '用户', '上传时间', '状态', '隐患类型', '风险等级', '隐患描述', '整改建议'];
@@ -462,16 +480,7 @@
         rows.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, '', '', '', '']);
       } else {
         risks.forEach(risk => {
-          rows.push([
-            r.id,
-            r.username,
-            new Date(r.upload_time).toLocaleString(),
-            r.status,
-            risk.type,
-            risk.severity,
-            risk.description,
-            risk.suggestion
-          ]);
+          rows.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, risk.type, risk.severity, risk.description, risk.suggestion]);
         });
       }
     });

@@ -8,7 +8,6 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
   <style>
-    /* 保持原有样式完全不变，此处省略，实际请复制之前完整的 style 标签 */
     * { margin:0; padding:0; box-sizing:border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fb; color: #2c3e50; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 12px; }
     .app-container { width: 100%; max-width: 520px; background: #ffffff; border-radius: 24px; box-shadow: 0 12px 40px rgba(0,0,0,0.08); overflow: hidden; display: flex; flex-direction: column; min-height: 90vh; }
@@ -55,6 +54,7 @@
 <div class="app-container" id="app"></div>
 
 <script>
+  // ==================== 全局配置 ====================
   const SUPABASE_URL = 'https://xnebqywzurzwpfzlzyvw.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_RbCAWLM9oKmvOEDdt2ybQg_JQK8jo67';
   const EDGE_FUNCTION = 'https://xnebqywzurzwpfzlzyvw.supabase.co/functions/v1/analyze-image';
@@ -64,11 +64,22 @@
   let currentUser = null;
   let userProfile = null;
 
+  // 监听认证状态
   supabaseClient.auth.onAuthStateChange((event, session) => {
-    if (event === 'SIGNED_OUT') { currentUser = null; userProfile = null; renderAuthPage('login'); }
-    else if (session) { currentUser = session.user; supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single().then(({ data }) => { userProfile = data || { role: 'safety', username: currentUser.email?.split('@')[0] }; renderApp(); }); }
+    if (event === 'SIGNED_OUT') {
+      currentUser = null;
+      userProfile = null;
+      renderAuthPage('login');
+    } else if (session) {
+      currentUser = session.user;
+      supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single().then(({ data }) => {
+        userProfile = data || { role: 'safety', username: currentUser.email?.split('@')[0] };
+        renderApp();
+      });
+    }
   });
 
+  // ==================== 初始化 ====================
   async function init() {
     try {
       const { data: { session } } = await supabaseClient.auth.getSession();
@@ -77,7 +88,11 @@
         const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single();
         userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
         if (!profile) {
-          await supabaseClient.from('profiles').insert({ id: currentUser.id, username: currentUser.email?.split('@')[0] || 'unknown', role: 'safety' });
+          await supabaseClient.from('profiles').insert({
+            id: currentUser.id,
+            username: currentUser.email?.split('@')[0] || 'unknown',
+            role: 'safety'
+          });
         }
         renderApp();
       } else {
@@ -89,7 +104,7 @@
     }
   }
 
-  // ================= 登录/注册页 (保持不变) =================
+  // ==================== 登录/注册页面 ====================
   function renderAuthPage(mode = 'login') {
     document.getElementById('app').innerHTML = `
       <div class="status-bar"><span>🔐 AI+管网安全助手</span></div>
@@ -102,7 +117,7 @@
         <p style="text-align:center; margin-top:16px;">
           ${mode === 'login' ? "还没有账号？ <a href='#' id='switchToRegister'>注册</a>" : "已有账号？ <a href='#' id='switchToLogin'>登录</a>"}
         </p>
-        <p style="font-size:12px; color:#7f8c8d; text-align:center;">测试账号：ghzhangsan01@163.com / 123456<br>管理员：admin@safety.ai（需在数据库设为admin）</p>
+        <p style="font-size:12px; color:#7f8c8d; text-align:center;">测试安全员：ghzhangsan01@163.com / 123456<br>管理员：admin@safety.ai（数据库设为admin）</p>
       </div>
     `;
     document.getElementById('authBtn').addEventListener('click', async () => {
@@ -130,20 +145,220 @@
     });
   }
 
+  // ==================== 主渲染 ====================
   function renderApp() {
     if (!userProfile) return;
     if (userProfile.role === 'admin') renderAdminUI();
     else renderSafetyUI();
   }
 
-  // ================= 安全员UI (保持之前完整代码，此处略，实际请复制之前的安全员部分) =================
-  function renderSafetyUI() { /* ... 完整安全员代码 ... */ }
-  async function renderSafetyPage(page) { /* ... 完整安全员代码 ... */ }
-  function renderRecordCard(record) { /* ... */ }
-  function attachRecordEvents() { /* ... */ }
-  function compressImage(file, maxWidth = 600, quality = 0.6) { /* ... */ }
+  // ==================== 安全员界面 ====================
+  function renderSafetyUI() {
+    document.getElementById('app').innerHTML = `
+      <div class="status-bar"><span>👷 ${userProfile.username}</span><button id="logoutBtn">退出</button></div>
+      <div class="main-content" id="safetyContent"></div>
+      <div class="bottom-nav">
+        <div class="nav-item active" data-page="upload"><span class="icon">📷</span>拍照</div>
+        <div class="nav-item" data-page="records"><span class="icon">📋</span>记录</div>
+        <div class="nav-item" data-page="stats"><span class="icon">📊</span>统计</div>
+      </div>
+    `;
+    document.getElementById('logoutBtn').addEventListener('click', async () => { await supabaseClient.auth.signOut(); window.location.reload(); });
+    document.querySelectorAll('.bottom-nav .nav-item').forEach(item => {
+      item.addEventListener('click', function() {
+        document.querySelectorAll('.bottom-nav .nav-item').forEach(n => n.classList.remove('active'));
+        this.classList.add('active');
+        renderSafetyPage(this.dataset.page);
+      });
+    });
+    renderSafetyPage('upload');
+  }
 
-  // ================= 管理员 UI (补全所有页面) =================
+  async function renderSafetyPage(page) {
+    const content = document.getElementById('safetyContent');
+    if (page === 'upload') {
+      content.innerHTML = `
+        <div class="card"><h3>📸 现场拍照</h3>
+          <input type="file" id="imageInput" accept="image/*">
+          <img id="previewImage" class="image-preview">
+          <button class="btn" id="analyzeBtn" style="width:100%; margin-top:12px;" disabled>🔍 AI隐患分析</button>
+          <div id="analysisResult" style="margin-top:16px;"></div>
+        </div>
+      `;
+      const fi = document.getElementById('imageInput'), pr = document.getElementById('previewImage'), ab = document.getElementById('analyzeBtn');
+      let curFile = null, curDataUrl = null;
+      fi.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        if (file.size > 10 * 1024 * 1024) {
+          alert('图片不能超过 10MB');
+          fi.value = '';
+          return;
+        }
+        curFile = file;
+        const reader = new FileReader();
+        reader.onload = (ev) => { curDataUrl = ev.target.result; pr.src = curDataUrl; pr.style.display='block'; ab.disabled = false; };
+        reader.readAsDataURL(file);
+      });
+      ab.addEventListener('click', async () => {
+        if (!curFile || !curDataUrl) return;
+        ab.disabled = true; ab.textContent = '⏳ 分析中...';
+        document.getElementById('analysisResult').innerHTML = '<p>调用千问视觉模型分析…</p>';
+        try {
+          const compressed = await compressImage(curFile, 600, 0.6);
+          const base64 = compressed.split(',')[1];
+          const { data: { session } } = await supabaseClient.auth.getSession();
+          if (!session) throw new Error('登录已过期，请重新登录');
+          const token = session.access_token;
+          const resp = await fetch(EDGE_FUNCTION, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_base64: base64 })
+          });
+          if (!resp.ok) {
+            const errData = await resp.json();
+            throw new Error(errData.error || '请求失败');
+          }
+          const { analysis } = await resp.json();
+          addLog('拍照分析', `隐患数 ${analysis.risks.length}`);
+          let riskHtml = '';
+          analysis.risks.forEach(r => riskHtml += `<div class="risk-item severity-${r.severity==='高'?'high':(r.severity==='中'?'medium':'low')}"><span class="risk-tag tag-${r.severity==='高'?'high':(r.severity==='中'?'medium':'low')}">${r.severity}风险</span><strong>${r.type}</strong><p>${r.description}</p><p>📝 ${r.suggestion}</p></div>`);
+          document.getElementById('analysisResult').innerHTML = riskHtml || '<p style="color:green;">✅ 未发现安全隐患</p>';
+          ab.textContent = '🔍 重新分析'; ab.disabled = false;
+        } catch(e) {
+          document.getElementById('analysisResult').innerHTML = `<p style="color:red;">失败：${e.message}</p>`;
+          ab.disabled = false; ab.textContent = '🔍 开始分析';
+        }
+      });
+    } else if (page === 'records') {
+      const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', currentUser.id).order('upload_time', { ascending: false });
+      let html = '<h3>📋 我的隐患记录</h3>';
+      if (!risks || risks.length === 0) html += '<div class="empty-state">暂无记录</div>';
+      else risks.forEach(r => html += renderRecordCard(r));
+      content.innerHTML = html;
+      attachRecordEvents();
+    } else if (page === 'stats') {
+      const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', currentUser.id);
+      const confirmed = risks?.filter(r => r.status === 'confirmed' || r.status === 'fixed') || [];
+      let totalConfirmed = 0, typeCount = {}, severities = {高:0,中:0,低:0};
+      confirmed.forEach(r => {
+        (r.confirmed_risks || []).forEach(idx => {
+          const risk = r.ai_result?.risks?.[idx];
+          if (risk) {
+            typeCount[risk.type] = (typeCount[risk.type]||0)+1;
+            severities[risk.severity] = (severities[risk.severity]||0)+1;
+            totalConfirmed++;
+          }
+        });
+      });
+      content.innerHTML = `
+        <h3>📊 个人统计</h3>
+        <div class="stats-grid">
+          <div class="stat-box"><div class="number">${risks?.length || 0}</div>累计分析次数</div>
+          <div class="stat-box"><div class="number">${totalConfirmed}</div>累计确认隐患</div>
+        </div>
+        <div class="card"><h4>隐患类型分布</h4><div class="chart-container"><canvas id="typeChart"></canvas></div></div>
+        <div class="card"><h4>风险等级</h4><div class="chart-container"><canvas id="severityChart"></canvas></div></div>
+      `;
+      if (totalConfirmed > 0) {
+        new Chart(document.getElementById('typeChart'), { type: 'pie', data: { labels: Object.keys(typeCount), datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }] } });
+        new Chart(document.getElementById('severityChart'), { type: 'bar', data: { labels: ['高','中','低'], datasets: [{ data: [severities['高']||0, severities['中']||0, severities['低']||0], backgroundColor: ['#e74c3c','#f39c12','#27ae60'] }] } });
+      }
+    }
+  }
+
+  // ==================== 公用组件 ====================
+  function compressImage(file, maxWidth = 600, quality = 0.6) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width, height = img.height;
+          if (width > maxWidth) { height = (maxWidth / width) * height; width = maxWidth; }
+          canvas.width = width; canvas.height = height;
+          canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.src = e.target.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function renderRecordCard(record) {
+    const statusMap = { pending:'⏳待处理', confirmed:'✅已确认', false_alarm:'❌误报', fixed:'🔧已整改' };
+    const risks = record.ai_result?.risks || [];
+    let riskHtml = '';
+    risks.forEach((risk, idx) => {
+      const isConfirmed = record.confirmed_risks?.includes(idx);
+      riskHtml += `<div class="risk-item severity-${risk.severity==='高'?'high':(risk.severity==='中'?'medium':'low')}">
+        <span class="risk-tag tag-${risk.severity==='高'?'high':(risk.severity==='中'?'medium':'low')}">${risk.severity}风险</span>
+        <strong>${risk.type}</strong><p>${risk.description}</p><p>📝 ${risk.suggestion}</p>
+        ${record.status === 'pending' ? `<div class="action-buttons"><button class="btn btn-sm btn-success confirm-risk" data-rid="${record.id}" data-idx="${idx}">✔ 确认</button><button class="btn btn-sm btn-outline false-alarm" data-rid="${record.id}" data-idx="${idx}">⚠ 误报</button></div>` : (isConfirmed ? '<span style="color:green;">已确认</span>' : '')}
+      </div>`;
+    });
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;"><span>📅 ${new Date(record.upload_time).toLocaleString()}</span><span>${statusMap[record.status]}</span></div>
+      ${record.image_path ? `<img src="${record.image_path}" style="width:100%;max-height:150px;object-fit:cover;border-radius:10px;margin:8px 0;">` : ''}
+      ${riskHtml}
+      ${record.status === 'confirmed' || record.status === 'fixed' ? `<div style="margin-top:10px;">${record.status === 'confirmed' ? `<button class="btn btn-sm btn-outline upload-fix" data-rid="${record.id}">📎 整改照片</button>` : ''}${record.fix_image_path ? `<img src="${record.fix_image_path}" style="width:100%;max-height:120px;border-radius:8px;">` : ''}${record.fix_desc ? `<p>📄 ${record.fix_desc}</p>` : ''}</div>` : ''}
+    </div>`;
+  }
+
+  function attachRecordEvents() {
+    document.querySelectorAll('.confirm-risk').forEach(btn => {
+      btn.onclick = async function() {
+        const rid = +this.dataset.rid, idx = +this.dataset.idx;
+        const { data: rec } = await supabaseClient.from('risks').select('*').eq('id', rid).single();
+        if (rec && rec.status === 'pending') {
+          let confirmed = rec.confirmed_risks || [];
+          if (!confirmed.includes(idx)) confirmed.push(idx);
+          const total = rec.ai_result.risks.length;
+          const newStatus = (confirmed.length + (rec.false_alarm_risks?.length || 0)) >= total ? 'confirmed' : 'pending';
+          await supabaseClient.from('risks').update({ confirmed_risks: confirmed, status: newStatus }).eq('id', rid);
+          addLog('确认隐患', `记录${rid} 确认${idx}`);
+          renderSafetyPage('records');
+        }
+      };
+    });
+    document.querySelectorAll('.false-alarm').forEach(btn => {
+      btn.onclick = async function() {
+        const rid = +this.dataset.rid, idx = +this.dataset.idx;
+        const { data: rec } = await supabaseClient.from('risks').select('*').eq('id', rid).single();
+        if (rec && rec.status === 'pending') {
+          let falseAlarm = rec.false_alarm_risks || [];
+          if (!falseAlarm.includes(idx)) falseAlarm.push(idx);
+          const total = rec.ai_result.risks.length;
+          const newStatus = (falseAlarm.length + (rec.confirmed_risks?.length || 0)) >= total ? (rec.confirmed_risks?.length > 0 ? 'confirmed' : 'false_alarm') : 'pending';
+          await supabaseClient.from('risks').update({ false_alarm_risks: falseAlarm, status: newStatus }).eq('id', rid);
+          addLog('标记误报', `记录${rid} 误报${idx}`);
+          renderSafetyPage('records');
+        }
+      };
+    });
+    document.querySelectorAll('.upload-fix').forEach(btn => {
+      btn.onclick = async function() {
+        const rid = +this.dataset.rid;
+        const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*';
+        input.onchange = async (e) => {
+          const file = e.target.files[0]; if(!file) return;
+          const fileName = `fix/${rid}_${Date.now()}.jpg`;
+          await supabaseClient.storage.from('fix-photos').upload(fileName, file);
+          const { data: urlData } = supabaseClient.storage.from('fix-photos').getPublicUrl(fileName);
+          const desc = prompt('整改描述：');
+          await supabaseClient.from('risks').update({ fix_image_path: urlData.publicUrl, fix_desc: desc || '已整改', fix_time: new Date().toISOString(), status: 'fixed' }).eq('id', rid);
+          addLog('上传整改', `记录${rid} 完成整改`);
+          renderSafetyPage('records');
+        };
+        input.click();
+      };
+    });
+  }
+
+  // ==================== 管理员界面 ====================
   function renderAdminUI() {
     document.getElementById('app').innerHTML = `
       <div class="status-bar"><span>🛡️ 管理员 ${userProfile.username}</span><button id="logoutBtn">退出</button></div>
@@ -189,8 +404,7 @@
       `;
       if (totalConfirmed > 0) new Chart(document.getElementById('adminTypeChart'), { type: 'pie', data: { labels: Object.keys(typeCount), datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }] } });
       document.getElementById('exportCsvBtn').addEventListener('click', () => exportDetailedCSV(allRisks || []));
-    }
-    else if (page === 'users') {
+    } else if (page === 'users') {
       const { data: profiles } = await supabaseClient.from('profiles').select('*');
       const { data: allRisks } = await supabaseClient.from('risks').select('*');
       let rows = '';
@@ -220,8 +434,7 @@
         addLog('删除数据', `管理员删除用户 ${btn.dataset.uid} 的数据`);
         renderAdminPage('users');
       });
-    }
-    else if (page === 'report') {
+    } else if (page === 'report') {
       content.innerHTML = `
         <h3>📄 生成专业报告</h3>
         <div class="card">
@@ -234,8 +447,7 @@
         <div id="reportPreview" class="card" style="display:none;"></div>
       `;
       document.getElementById('genReportBtn').addEventListener('click', generateReport);
-    }
-    else if (page === 'logs') {
+    } else if (page === 'logs') {
       const { data: logs } = await supabaseClient.from('logs').select('*').order('created_at', { ascending: false }).limit(100);
       let html = '<h3>📜 操作日志</h3>';
       if (!logs || logs.length === 0) html += '<div class="empty-state">暂无日志</div>';
@@ -244,7 +456,7 @@
     }
   }
 
-  // ---------- 报告生成 (含保存与重新生成) ----------
+  // ---------- 报告生成与导出 ----------
   async function generateReport() {
     const type = document.getElementById('reportType').value;
     const monthVal = document.getElementById('reportMonth').value;
@@ -343,7 +555,6 @@
       console.error(err);
     }
 
-    // 存储当前报告数据到变量，便于保存和重新生成
     window.currentReportData = { statsForAI, filtered, confirmed, summary, periodLabel, type };
     renderReportPreview();
   }
@@ -369,7 +580,6 @@
         <button class="btn btn-sm" id="regenerateBtn">🔄 重新生成</button>
       </div>
     `;
-
     document.getElementById('exportExcelBtn').addEventListener('click', () => {
       const { statsForAI, filtered, confirmed, summary, periodLabel } = window.currentReportData;
       exportReportExcel(statsForAI, filtered, confirmed, summary, periodLabel);
@@ -392,12 +602,9 @@
       if (error) alert('保存失败：' + error.message);
       else alert('报告已保存至云端！');
     });
-    document.getElementById('regenerateBtn').addEventListener('click', () => {
-      generateReport(); // 重新执行生成流程
-    });
+    document.getElementById('regenerateBtn').addEventListener('click', generateReport);
   }
 
-  // 导出 Excel 和 Word 函数 (与之前相同)
   function exportReportExcel(stats, allRecords, confirmed, summary, period) {
     const wb = XLSX.utils.book_new();
     const overviewData = [['指标', '数值'], ['报告周期', period], ['总分析次数', stats.totalAnalysis], ['确认隐患总数', stats.totalConfirmedRisks], ['与上期对比变化', stats.change], ['AI摘要', summary]];
@@ -448,7 +655,7 @@
     URL.revokeObjectURL(url);
   }
 
-  // 公用函数 (addLog, showUserData, exportDetailedCSV 等)
+  // ==================== 辅助函数 ====================
   async function addLog(action, detail) {
     await supabaseClient.from('logs').insert({
       user_id: currentUser.id,
@@ -498,7 +705,7 @@
     attachRecordEvents();
   }
 
-  // 请确保安全员相关函数（renderSafetyUI, renderSafetyPage, renderRecordCard, compressImage, attachRecordEvents）已完整保留
+  // 启动应用
   init();
 </script>
 </body>

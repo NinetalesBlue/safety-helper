@@ -4,9 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>AI+管网安全助手 云端版</title>
-  <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-  <!-- Supabase JS SDK -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
@@ -54,18 +52,16 @@
 <div class="app-container" id="app"></div>
 
 <script>
-  // ==================== 单一 Supabase 实例 ====================
+  // Supabase 配置
   const SUPABASE_URL = 'https://xnebqywzurzwpfzlzyvw.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_RbCAWLM9oKmvOEDdt2ybQg_JQK8jo67';
   const EDGE_FUNCTION = 'https://xnebqywzurzwpfzlzyvw.supabase.co/functions/v1/analyze-image';
-  
-  // 使用全局 supabase 命名空间创建客户端（仅一次）
   const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
   let currentUser = null;
   let userProfile = null;
 
-  // ---------- 初始化 ----------
+  // 初始化
   async function init() {
     try {
       const { data: { session } } = await supabaseClient.auth.getSession();
@@ -85,14 +81,14 @@
         renderAuthPage('login');
       }
     } catch (e) {
-      console.error('初始化失败:', e);
-      document.getElementById('app').innerHTML = '<div class="card"><p style="color:red;">初始化失败，请检查网络或配置。</p></div>';
+      console.error(e);
+      document.getElementById('app').innerHTML = '<div class="card"><p style="color:red;">加载失败，请检查网络。</p></div>';
     }
   }
 
-  // ---------- 认证页面 ----------
+  // 登录/注册页
   function renderAuthPage(mode = 'login') {
-    const html = `
+    document.getElementById('app').innerHTML = `
       <div class="status-bar"><span>🔐 AI+管网安全助手</span></div>
       <div class="main-content login-form">
         <h2 style="text-align:center; margin-bottom:20px;">${mode === 'login' ? '登录' : '注册'}</h2>
@@ -103,10 +99,9 @@
         <p style="text-align:center; margin-top:16px;">
           ${mode === 'login' ? "还没有账号？ <a href='#' id='switchToRegister'>注册</a>" : "已有账号？ <a href='#' id='switchToLogin'>登录</a>"}
         </p>
-        <p style="font-size:12px; color:#7f8c8d; text-align:center;">测试账号：ghzhangsan01@163.com / 123456<br>管理员请使用 admin@safety.ai（需在数据库设为admin角色）</p>
+        <p style="font-size:12px; color:#7f8c8d; text-align:center;">测试账号：ghzhangsan01@163.com / 123456<br>管理员：admin@safety.ai（需在数据库设为admin）</p>
       </div>
     `;
-    document.getElementById('app').innerHTML = html;
     document.getElementById('authBtn').addEventListener('click', async () => {
       const email = document.getElementById('authEmail').value.trim();
       const password = document.getElementById('authPassword').value;
@@ -132,14 +127,13 @@
     });
   }
 
-  // ---------- 主渲染 ----------
   function renderApp() {
     if (!userProfile) return;
     if (userProfile.role === 'admin') renderAdminUI();
     else renderSafetyUI();
   }
 
-  // ===================== 安全员界面 =====================
+  // ================= 安全员 UI =================
   function renderSafetyUI() {
     document.getElementById('app').innerHTML = `
       <div class="status-bar"><span>👷 ${userProfile.username}</span><button id="logoutBtn">退出</button></div>
@@ -186,28 +180,20 @@
         ab.disabled = true; ab.textContent = '⏳ 分析中...';
         document.getElementById('analysisResult').innerHTML = '<p>调用千问视觉模型分析…</p>';
         try {
-          const fileName = `${currentUser.id}/${Date.now()}.jpg`;
-          await supabaseClient.storage.from('risks-photos').upload(fileName, curFile);
-          const { data: urlData } = supabaseClient.storage.from('risks-photos').getPublicUrl(fileName);
           const base64 = curDataUrl.split(',')[1];
           const resp = await fetch(EDGE_FUNCTION, {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${currentUser.access_token}`, 'Content-Type': 'application/json' },
+            headers: {
+              'Authorization': `Bearer ${currentUser.access_token}`,
+              'Content-Type': 'application/json'
+            },
             body: JSON.stringify({ image_base64: base64 })
           });
-          if (!resp.ok) throw new Error(await resp.text());
-          const { analysis, error } = await resp.json();
-          if (error) throw new Error(error);
-          const record = {
-            id: Date.now(),
-            user_id: currentUser.id,
-            username: userProfile.username,
-            upload_time: new Date().toISOString(),
-            image_path: urlData.publicUrl,
-            ai_result: analysis,
-            status: 'pending',
-          };
-          await supabaseClient.from('risks').insert(record);
+          if (!resp.ok) {
+            const errData = await resp.json();
+            throw new Error(errData.error || '请求失败');
+          }
+          const { analysis } = await resp.json();
           addLog('拍照分析', `隐患数 ${analysis.risks.length}`);
           let riskHtml = '';
           analysis.risks.forEach(r => riskHtml += `<div class="risk-item severity-${r.severity==='高'?'high':(r.severity==='中'?'medium':'low')}"><span class="risk-tag tag-${r.severity==='高'?'high':(r.severity==='中'?'medium':'low')}">${r.severity}风险</span><strong>${r.type}</strong><p>${r.description}</p><p>📝 ${r.suggestion}</p></div>`);
@@ -325,7 +311,7 @@
     });
   }
 
-  // ===================== 管理员界面 =====================
+  // ================= 管理员 UI =================
   function renderAdminUI() {
     document.getElementById('app').innerHTML = `
       <div class="status-bar"><span>🛡️ 管理员 ${userProfile.username}</span><button id="logoutBtn">退出</button></div>
@@ -367,10 +353,10 @@
           <div class="stat-box"><div class="number">${totalConfirmed}</div>累计确认隐患</div>
         </div>
         <div class="card"><h4>隐患类型分布</h4><div class="chart-container"><canvas id="adminTypeChart"></canvas></div></div>
-        <button class="btn btn-outline" id="exportCsvBtn" style="margin-top:10px;">📥 导出统计数据 (CSV)</button>
+        <button class="btn btn-outline" id="exportCsvBtn" style="margin-top:10px;">📥 导出全部数据 (CSV)</button>
       `;
       if (totalConfirmed > 0) new Chart(document.getElementById('adminTypeChart'), { type: 'pie', data: { labels: Object.keys(typeCount), datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }] } });
-      document.getElementById('exportCsvBtn').addEventListener('click', () => exportToCSV(allRisks || []));
+      document.getElementById('exportCsvBtn').addEventListener('click', () => exportDetailedCSV(allRisks || []));
     } else if (page === 'users') {
       const { data: profiles } = await supabaseClient.from('profiles').select('*');
       const { data: allRisks } = await supabaseClient.from('risks').select('*');
@@ -378,23 +364,28 @@
       profiles?.forEach(p => {
         const userRisks = allRisks?.filter(r => r.user_id === p.id) || [];
         const confCount = userRisks.reduce((acc, r) => acc + (r.confirmed_risks?.length || 0), 0);
-        rows += `<tr><td>${p.username} (${p.role})</td><td>${userRisks.length}</td><td>${confCount}</td><td><button class="btn btn-sm btn-outline view-user-data" data-uid="${p.id}">查看数据</button> <button class="btn btn-sm btn-danger delete-user-data" data-uid="${p.id}">删除所有</button></td></tr>`;
+        rows += `<tr><td>${p.username} (${p.role})</td><td>${userRisks.length}</td><td>${confCount}</td><td>
+          <button class="btn btn-sm btn-outline view-user-data" data-uid="${p.id}">查看</button>
+          <button class="btn btn-sm btn-outline export-user-csv" data-uid="${p.id}" style="margin-left:4px;">导出CSV</button>
+          <button class="btn btn-sm btn-danger delete-user-data" data-uid="${p.id}" style="margin-left:4px;">删除</button>
+        </td></tr>`;
       });
       content.innerHTML = `
         <h3>👥 用户管理</h3>
         <table class="user-table"><thead><tr><th>用户</th><th>分析次数</th><th>确认隐患</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>
         <div id="userDetail"></div>
       `;
-      document.querySelectorAll('.view-user-data').forEach(btn => {
-        btn.onclick = () => showUserData(btn.dataset.uid);
+      document.querySelectorAll('.view-user-data').forEach(btn => btn.onclick = () => showUserData(btn.dataset.uid));
+      document.querySelectorAll('.export-user-csv').forEach(btn => btn.onclick = async () => {
+        const uid = btn.dataset.uid;
+        const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', uid).order('upload_time', { ascending: false });
+        exportDetailedCSV(risks || []);
       });
-      document.querySelectorAll('.delete-user-data').forEach(btn => {
-        btn.onclick = async () => {
-          if (!confirm('确定删除该用户所有数据？不可恢复！')) return;
-          await supabaseClient.from('risks').delete().eq('user_id', btn.dataset.uid);
-          addLog('删除数据', `管理员删除用户 ${btn.dataset.uid} 的数据`);
-          renderAdminPage('users');
-        };
+      document.querySelectorAll('.delete-user-data').forEach(btn => btn.onclick = async () => {
+        if (!confirm('确定删除该用户所有数据？')) return;
+        await supabaseClient.from('risks').delete().eq('user_id', btn.dataset.uid);
+        addLog('删除数据', `管理员删除用户 ${btn.dataset.uid} 的数据`);
+        renderAdminPage('users');
       });
     } else if (page === 'report') {
       content.innerHTML = `
@@ -434,7 +425,7 @@
     const detailDiv = document.getElementById('userDetail');
     let html = `<div class="card"><h4>📋 ${profile?.username} 的数据</h4>
       <p>累计分析：${risks?.length || 0} | 确认隐患：${risks?.reduce((acc, r) => acc + (r.confirmed_risks?.length||0), 0)}</p>
-      <button class="btn btn-sm btn-danger" id="deleteUserDataBtn" data-uid="${uid}">删除该用户所有数据</button>
+      <button class="btn btn-sm btn-danger" id="deleteUserDataBtn" data-uid="${uid}">删除所有数据</button>
       <button class="btn btn-sm btn-outline" id="exportUserCsvBtn" data-uid="${uid}" style="margin-left:8px;">📥 导出 CSV</button>
       <hr>`;
     risks?.forEach(r => html += renderRecordCard(r));
@@ -446,7 +437,7 @@
       addLog('删除数据', `管理员删除用户 ${uid} 全部数据`);
       detailDiv.innerHTML = '<p>数据已删除</p>';
     });
-    document.getElementById('exportUserCsvBtn').addEventListener('click', () => exportToCSV(risks || []));
+    document.getElementById('exportUserCsvBtn').addEventListener('click', () => exportDetailedCSV(risks || []));
     attachRecordEvents();
   }
 
@@ -460,26 +451,38 @@
     });
   }
 
-  function exportToCSV(records) {
+  // 导出详细 CSV（包含每条隐患的具体信息）
+  function exportDetailedCSV(records) {
     if (!records || records.length === 0) return alert('无数据可导出');
-    const headers = ['ID', '用户', '上传时间', '状态', '隐患数量', '确认数量'];
-    const rows = records.map(r => [
-      r.id,
-      r.username,
-      new Date(r.upload_time).toLocaleString(),
-      r.status,
-      r.ai_result?.risks?.length || 0,
-      r.confirmed_risks?.length || 0
-    ]);
+    const headers = ['记录ID', '用户', '上传时间', '状态', '隐患类型', '风险等级', '隐患描述', '整改建议'];
+    const rows = [];
+    records.forEach(r => {
+      const risks = r.ai_result?.risks || [];
+      if (risks.length === 0) {
+        rows.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, '', '', '', '']);
+      } else {
+        risks.forEach(risk => {
+          rows.push([
+            r.id,
+            r.username,
+            new Date(r.upload_time).toLocaleString(),
+            r.status,
+            risk.type,
+            risk.severity,
+            risk.description,
+            risk.suggestion
+          ]);
+        });
+      }
+    });
     let csv = headers.join(',') + '\n';
-    rows.forEach(row => csv += row.join(',') + '\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    rows.forEach(row => csv += row.map(v => `"${v}"`).join(',') + '\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = `safety_export_${Date.now()}.csv`; a.click();
+    const a = document.createElement('a'); a.href = url; a.download = `safety_detail_${Date.now()}.csv`; a.click();
     URL.revokeObjectURL(url);
   }
 
-  // 启动
   init();
 </script>
 </body>

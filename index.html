@@ -7,7 +7,6 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
-  <!-- 稳定 jsdelivr CDN -->
   <script src="https://cdn.jsdelivr.net/npm/pizzip@3.1.4/dist/pizzip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/docxtemplater@3.48.1/build/docxtemplater.min.js"></script>
   <style>
@@ -477,7 +476,7 @@
     });
   }
 
-  // ==================== 整改单生成 ====================
+  // ==================== 整改单生成（增强手动替换） ====================
   async function generateRectificationDocs() {
     const checkboxes = document.querySelectorAll('.select-checkbox:checked');
     if (checkboxes.length === 0) { alert('请至少勾选一条记录'); return; }
@@ -553,7 +552,7 @@
           imageBase64 = await new Promise(resolve => { const reader = new FileReader(); reader.onloadend = () => resolve(reader.result); reader.readAsDataURL(blob); });
         } catch (e) {}
       }
-      await generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions, extra);
+      await generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions, extra, confirmedRisks);
       return;
     }
 
@@ -579,54 +578,130 @@
       const out = doc.getZip().generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
       downloadDoc(out, extra.serial, extra.team);
     } catch (e) {
-      await generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions, extra);
+      await generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions, extra, confirmedRisks);
     }
   }
 
-  async function generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions, extra) {
+  // 手动替换函数，支持占位符空格容错和索引占位符
+  function replacePlaceholder(xml, name, value) {
+    return xml.replace(new RegExp(`\\{\\s*${name}\\s*\\}`, 'g'), value || '');
+  }
+
+  async function generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions, extra, confirmedRisks) {
     const zip = new PizZip(await templateBlob.arrayBuffer());
     let xml = zip.file('word/document.xml').asText();
-    xml = xml.replace(/{编号}/g, extra.serial);
-    xml = xml.replace(/{检查时间}/g, extra.checkTime);
-    xml = xml.replace(/{整改期限}/g, extra.deadline || '');
-    xml = xml.replace(/{整改班组}/g, extra.team || '');
-    xml = xml.replace(/{整改责任人}/g, extra.responsible || '');
-    xml = xml.replace(/{隐患内容}/g, riskDescriptions || '无');
-    xml = xml.replace(/{整改要求}/g, riskSuggestions || '无');
-    if (imageBase64 && xml.includes('{隐患照片}')) {
-      const imgId = 'rId' + Math.random().toString(36).substr(2,8);
-      const imgFileName = 'image1.jpg';
-      const base64Data = imageBase64.split(',')[1];
-      const binaryStr = atob(base64Data);
-      const bytes = new Uint8Array(binaryStr.length);
-      for (let i=0; i<binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-      zip.file(`word/media/${imgFileName}`, bytes);
-      const imageXml = `
-        <w:drawing>
-          <wp:inline distT="0" distB="0" distL="0" distR="0">
-            <wp:extent cx="3000000" cy="2250000"/>
-            <wp:docPr id="1" name="Picture 1"/>
-            <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
-              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
-                <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
-                  <pic:nvPicPr><pic:cNvPr id="0" name="Picture 1"/><pic:cNvPicPr/></pic:nvPicPr>
-                  <pic:blipFill><a:blip r:embed="${imgId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
-                  <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3000000" cy="2250000"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr>
-                </pic:pic>
-              </a:graphicData>
-            </a:graphic>
-          </wp:inline>
-        </w:drawing>`;
-      xml = xml.replace(/{隐患照片}/g, imageXml);
-      let relsXml = zip.file('word/_rels/document.xml.rels')?.asText() || '';
-      relsXml += `<Relationship Id="${imgId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${imgFileName}"/>`;
-      zip.file('word/_rels/document.xml.rels', relsXml);
-      let contentTypes = zip.file('[Content_Types].xml')?.asText() || '';
-      if (!contentTypes.includes('image/jpeg')) {
-        contentTypes = contentTypes.replace('</Types>', '<Default Extension="jpg" ContentType="image/jpeg"/></Types>');
-        zip.file('[Content_Types].xml', contentTypes);
+
+    // 替换基本信息（容错空格）
+    xml = replacePlaceholder(xml, '编号', extra.serial);
+    xml = replacePlaceholder(xml, '检查时间', extra.checkTime);
+    xml = replacePlaceholder(xml, '整改期限', extra.deadline || '');
+    xml = replacePlaceholder(xml, '整改班组', extra.team || '');
+    xml = replacePlaceholder(xml, '整改责任人', extra.responsible || '');
+
+    // 判断是否使用索引占位符（如 {隐患内容1}）
+    const useIndex = confirmedRisks && confirmedRisks.length > 0 && xml.includes('{隐患内容1}');
+
+    if (useIndex) {
+      // 提前处理图片：上传一张图片到 zip，后续为每个占位符生成关系
+      let mediaFileName = '';
+      if (imageBase64) {
+        mediaFileName = 'image_common.jpg';
+        const base64Data = imageBase64.split(',')[1];
+        const binaryStr = atob(base64Data);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+        zip.file(`word/media/${mediaFileName}`, bytes);
+        // 更新 [Content_Types].xml
+        let contentTypes = zip.file('[Content_Types].xml')?.asText() || '';
+        if (!contentTypes.includes('image/jpeg')) {
+          contentTypes = contentTypes.replace('</Types>', '<Default Extension="jpg" ContentType="image/jpeg"/></Types>');
+          zip.file('[Content_Types].xml', contentTypes);
+        }
+      }
+
+      // 循环替换每条隐患
+      for (let i = 1; i <= confirmedRisks.length; i++) {
+        const risk = confirmedRisks[i-1];
+        xml = replacePlaceholder(xml, `隐患内容${i}`, risk?.description || '');
+        xml = replacePlaceholder(xml, `整改要求${i}`, risk?.suggestion || '');
+
+        // 隐患照片
+        if (imageBase64) {
+          const imgId = `rId_idx_${i}_${Math.random().toString(36).substr(2,6)}`;
+          const imageXml = `
+            <w:drawing>
+              <wp:inline distT="0" distB="0" distL="0" distR="0">
+                <wp:extent cx="3000000" cy="2250000"/>
+                <wp:docPr id="1" name="Picture ${i}"/>
+                <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                  <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                    <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                      <pic:nvPicPr><pic:cNvPr id="0" name="Picture ${i}"/><pic:cNvPicPr/></pic:nvPicPr>
+                      <pic:blipFill><a:blip r:embed="${imgId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+                      <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3000000" cy="2250000"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr>
+                    </pic:pic>
+                  </a:graphicData>
+                </a:graphic>
+              </wp:inline>
+            </w:drawing>`;
+          xml = replacePlaceholder(xml, `隐患照片${i}`, imageXml);
+
+          // 添加关系
+          let relsXml = zip.file('word/_rels/document.xml.rels')?.asText() || '';
+          relsXml += `<Relationship Id="${imgId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${mediaFileName}"/>`;
+          zip.file('word/_rels/document.xml.rels', relsXml);
+        } else {
+          xml = replacePlaceholder(xml, `隐患照片${i}`, '');
+        }
+      }
+      // 清除可能多余的未使用索引占位符（如果模板预留了更多）
+      for (let i = confirmedRisks.length + 1; i <= 20; i++) {
+        xml = replacePlaceholder(xml, `隐患内容${i}`, '');
+        xml = replacePlaceholder(xml, `整改要求${i}`, '');
+        if (imageBase64) {
+          xml = replacePlaceholder(xml, `隐患照片${i}`, ''); // 若模板有预留，清空
+        }
+      }
+    } else {
+      // 回退到单占位符模式
+      xml = replacePlaceholder(xml, '隐患内容', riskDescriptions || '无');
+      xml = replacePlaceholder(xml, '整改要求', riskSuggestions || '无');
+      if (imageBase64 && xml.includes('{隐患照片}')) {
+        const imgId = 'rId_' + Math.random().toString(36).substr(2,8);
+        const imgFileName = 'image1.jpg';
+        const base64Data = imageBase64.split(',')[1];
+        const binaryStr = atob(base64Data);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+        zip.file(`word/media/${imgFileName}`, bytes);
+        const imageXml = `
+          <w:drawing>
+            <wp:inline distT="0" distB="0" distL="0" distR="0">
+              <wp:extent cx="3000000" cy="2250000"/>
+              <wp:docPr id="1" name="Picture 1"/>
+              <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                    <pic:nvPicPr><pic:cNvPr id="0" name="Picture 1"/><pic:cNvPicPr/></pic:nvPicPr>
+                    <pic:blipFill><a:blip r:embed="${imgId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+                    <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3000000" cy="2250000"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr>
+                  </pic:pic>
+                </a:graphicData>
+              </a:graphic>
+            </wp:inline>
+          </w:drawing>`;
+        xml = replacePlaceholder(xml, '隐患照片', imageXml);
+        let relsXml = zip.file('word/_rels/document.xml.rels')?.asText() || '';
+        relsXml += `<Relationship Id="${imgId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${imgFileName}"/>`;
+        zip.file('word/_rels/document.xml.rels', relsXml);
+        let contentTypes = zip.file('[Content_Types].xml')?.asText() || '';
+        if (!contentTypes.includes('image/jpeg')) {
+          contentTypes = contentTypes.replace('</Types>', '<Default Extension="jpg" ContentType="image/jpeg"/></Types>');
+          zip.file('[Content_Types].xml', contentTypes);
+        }
       }
     }
+
     zip.file('word/document.xml', xml);
     const blob = zip.generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
     downloadDoc(blob, extra.serial, extra.team);

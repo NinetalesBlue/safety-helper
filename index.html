@@ -54,6 +54,9 @@
     .modal-overlay { position: fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:1000; }
     .modal-box { background:white; border-radius:16px; padding:20px; width:90%; max-width:400px; }
     .modal-box input { width:100%; padding:10px; margin:8px 0; border:1px solid #ddd; border-radius:8px; }
+    .mode-switch { display: flex; gap: 10px; margin-bottom: 15px; }
+    .mode-switch .btn-sm { background: #f0f0f0; color: #333; }
+    .mode-switch .btn-sm.active { background: #1e3b5a; color: white; }
   </style>
 </head>
 <body>
@@ -76,6 +79,7 @@
   let currentPreviewURL = null;
   let currentUploadFile = null;
   let currentPieChart = null;
+  let cachedAllRisks = null;
 
   // ==================== 动态加载文档库 ====================
   async function ensureDocumentLibs() {
@@ -91,9 +95,15 @@
     if (typeof docxtemplater === 'undefined') {
       await new Promise((resolve, reject) => {
         const script = document.createElement('script');
-        script.src = 'https://unpkg.com/docxtemplater@3.48.1/build/docxtemplater.min.js';
+        script.src = 'https://cdn.jsdelivr.net/npm/docxtemplater@3.48.1/build/docxtemplater.min.js';
         script.onload = resolve;
-        script.onerror = () => reject(new Error('docxtemplater 加载失败'));
+        script.onerror = async () => {
+          const script2 = document.createElement('script');
+          script2.src = 'https://unpkg.com/docxtemplater@3.48.1/build/docxtemplater.min.js';
+          script2.onload = resolve;
+          script2.onerror = () => reject(new Error('docxtemplater 加载失败'));
+          document.head.appendChild(script2);
+        };
         document.head.appendChild(script);
       });
     }
@@ -276,16 +286,18 @@
       });
     } else if (page === 'records') {
       const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', currentUser.id).order('upload_time', { ascending: false });
-      let html = '<h3>📋 我的记录</h3>';
-      const confirmedRecords = risks?.filter(r => r.status === 'confirmed' || r.status === 'fixed') || [];
+      const now = Date.now();
+      const recentRisks = risks ? risks.filter(r => (now - new Date(r.upload_time).getTime()) < 48 * 3600 * 1000) : [];
+      let html = '<h3>📋 我的记录 (最近48小时)</h3>';
+      const confirmedRecords = recentRisks?.filter(r => r.status === 'confirmed' || r.status === 'fixed') || [];
       if (confirmedRecords.length > 0) {
         html += `<div style="margin-bottom:12px;">
           <button class="btn btn-sm btn-outline" id="toggleSelectModeBtn">📎 生成整改单</button>
         </div>`;
       }
       html += '<div id="recordsList">';
-      if (!risks || risks.length === 0) html += '<div class="empty-state">暂无记录</div>';
-      else risks.forEach(r => html += renderRecordCard(r));
+      if (!recentRisks || recentRisks.length === 0) html += '<div class="empty-state">暂无48小时内的记录</div>';
+      else recentRisks.forEach(r => html += renderRecordCard(r));
       html += '</div>';
       html += '<div id="selectActionsContainer"></div>';
       content.innerHTML = html;
@@ -352,6 +364,7 @@
         </div>
       `;
       if (totalConfirmed > 0) {
+        if (currentPieChart) { currentPieChart.destroy(); currentPieChart = null; }
         const typeCanvas = document.getElementById('typeChart');
         if (typeCanvas) {
           currentPieChart = new Chart(typeCanvas, {
@@ -374,6 +387,8 @@
         }
         const sevCanvas = document.getElementById('severityChart');
         if (sevCanvas) {
+          const existingSevChart = Chart.getChart(sevCanvas);
+          if (existingSevChart) existingSevChart.destroy();
           new Chart(sevCanvas, {
             type: 'bar',
             data: {
@@ -573,7 +588,6 @@
   }
 
   async function generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions, extra) {
-    await ensureDocumentLibs();
     const zip = new PizZip(await templateBlob.arrayBuffer());
     let xml = zip.file('word/document.xml').asText();
     xml = xml.replace(/{编号}/g, extra.serial);
@@ -655,50 +669,11 @@
   async function renderAdminPage(page) {
     const content = document.getElementById('adminContent');
     if (page === 'overview') {
-      const { data: allRisks } = await supabaseClient.from('risks').select('*');
-      const confirmed = allRisks?.filter(r => r.status === 'confirmed' || r.status === 'fixed') || [];
-      let totalConfirmed = 0;
-      const rawTypeCount = {};
-      confirmed.forEach(r => {
-        (r.confirmed_risks || []).forEach(idx => {
-          const risk = r.ai_result?.risks?.[idx];
-          if (risk) { rawTypeCount[risk.type] = (rawTypeCount[risk.type]||0)+1; totalConfirmed++; }
-        });
-      });
-      const typeCount = {};
-      Object.entries(rawTypeCount).forEach(([type, count]) => {
-        const normalized = normalizeRiskType(type);
-        typeCount[normalized] = (typeCount[normalized]||0) + count;
-      });
-      content.innerHTML = `
-        <h3>📊 全项目累计统计</h3>
-        <div class="stats-grid">
-          <div class="stat-box"><div class="number">${allRisks?.length || 0}</div>累计分析次数</div>
-          <div class="stat-box"><div class="number">${totalConfirmed}</div>累计确认隐患</div>
-        </div>
-        <div class="card">
-          <h4>隐患类型分布</h4>
-          <div class="chart-container"><canvas id="adminTypeChart"></canvas></div>
-          <button class="btn btn-sm btn-outline" id="downloadAdminChartBtn" style="margin-top:8px;">📥 下载饼图</button>
-        </div>
-        <button class="btn btn-outline" id="exportExcelBtn" style="margin-top:10px;">📥 导出全部数据 (Excel)</button>
-      `;
-      if (totalConfirmed > 0) {
-        const canvas = document.getElementById('adminTypeChart');
-        if (canvas) {
-          currentPieChart = new Chart(canvas, { type: 'pie', data: { labels: Object.keys(typeCount), datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }] } });
-          const downloadBtn = document.getElementById('downloadAdminChartBtn');
-          if (downloadBtn) downloadBtn.addEventListener('click', () => {
-            if (!currentPieChart) return;
-            const link = document.createElement('a');
-            link.download = `全项目隐患分布_${new Date().toISOString().slice(0,10)}.png`;
-            link.href = currentPieChart.toBase64Image('image/png', 1);
-            link.click();
-          });
-        }
+      if (!cachedAllRisks) {
+        const { data: allRisks } = await supabaseClient.from('risks').select('*');
+        cachedAllRisks = allRisks || [];
       }
-      const exportBtn = document.getElementById('exportExcelBtn');
-      if (exportBtn) exportBtn.addEventListener('click', () => exportDetailedExcel(allRisks || []));
+      renderOverviewStats(content, 'all');
     } else if (page === 'users') {
       const { data: profiles } = await supabaseClient.from('profiles').select('*');
       const { data: allRisks } = await supabaseClient.from('risks').select('*');
@@ -752,6 +727,77 @@
       else logs.forEach(l => html += `<div class="log-entry"><strong>${l.username}</strong> ${l.action} - ${l.detail} <span style="float:right;">${new Date(l.created_at).toLocaleString()}</span></div>`);
       content.innerHTML = html;
     }
+  }
+
+  function renderOverviewStats(content, mode) {
+    const allRisks = cachedAllRisks || [];
+    let filtered = allRisks;
+    if (mode === 'monthly') {
+      const thirtyDaysAgo = Date.now() - 30 * 24 * 3600 * 1000;
+      filtered = allRisks.filter(r => new Date(r.upload_time).getTime() >= thirtyDaysAgo);
+    }
+    const confirmed = filtered.filter(r => r.status === 'confirmed' || r.status === 'fixed');
+    let totalConfirmed = 0;
+    const rawTypeCount = {};
+    confirmed.forEach(r => {
+      (r.confirmed_risks || []).forEach(idx => {
+        const risk = r.ai_result?.risks?.[idx];
+        if (risk) { rawTypeCount[risk.type] = (rawTypeCount[risk.type]||0)+1; totalConfirmed++; }
+      });
+    });
+    const typeCount = {};
+    Object.entries(rawTypeCount).forEach(([type, count]) => {
+      const normalized = normalizeRiskType(type);
+      typeCount[normalized] = (typeCount[normalized]||0) + count;
+    });
+
+    content.innerHTML = `
+      <h3>📊 ${mode === 'all' ? '全项目累计统计' : '近30天统计'}</h3>
+      <div class="mode-switch">
+        <button class="btn btn-sm ${mode === 'all' ? 'active' : ''}" id="modeAllBtn">全项目累计</button>
+        <button class="btn btn-sm ${mode === 'monthly' ? 'active' : ''}" id="modeMonthlyBtn">近30天</button>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-box"><div class="number">${filtered.length}</div>分析次数</div>
+        <div class="stat-box"><div class="number">${totalConfirmed}</div>确认隐患数</div>
+      </div>
+      <div class="card">
+        <h4>隐患类型分布</h4>
+        <div class="chart-container"><canvas id="adminTypeChart"></canvas></div>
+        <button class="btn btn-sm btn-outline" id="downloadAdminChartBtn" style="margin-top:8px;">📥 下载饼图</button>
+      </div>
+      <button class="btn btn-outline" id="exportExcelBtn" style="margin-top:10px;">📥 导出全部数据 (Excel)</button>
+    `;
+
+    document.getElementById('modeAllBtn').addEventListener('click', () => renderOverviewStats(content, 'all'));
+    document.getElementById('modeMonthlyBtn').addEventListener('click', () => renderOverviewStats(content, 'monthly'));
+
+    if (totalConfirmed > 0) {
+      if (currentPieChart) { currentPieChart.destroy(); currentPieChart = null; }
+      const canvas = document.getElementById('adminTypeChart');
+      if (canvas) {
+        currentPieChart = new Chart(canvas, {
+          type: 'pie',
+          data: {
+            labels: Object.keys(typeCount),
+            datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }]
+          }
+        });
+        const downloadBtn = document.getElementById('downloadAdminChartBtn');
+        if (downloadBtn) {
+          downloadBtn.addEventListener('click', () => {
+            if (!currentPieChart) return;
+            const link = document.createElement('a');
+            link.download = `全项目隐患分布_${new Date().toISOString().slice(0,10)}.png`;
+            link.href = currentPieChart.toBase64Image('image/png', 1);
+            link.click();
+          });
+        }
+      }
+    }
+
+    const exportBtn = document.getElementById('exportExcelBtn');
+    if (exportBtn) exportBtn.addEventListener('click', () => exportDetailedExcel(filtered));
   }
 
   // ==================== 报告生成 ====================

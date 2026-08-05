@@ -161,7 +161,7 @@
     else renderSafetyUI();
   }
 
-  // ==================== 隐患类型规范化映射表 ====================
+  // ==================== 隐患类型规范化映射 ====================
   const RISK_TYPE_MAP = {
     '警示标识缺失': '警示标识不符合要求',
     '警示标识不足': '警示标识不符合要求',
@@ -362,7 +362,7 @@
           new Chart(sevCanvas, {
             type: 'bar',
             data: {
-              labels: ['高', '中', '低'],  // 固定标签，避免 undefined
+              labels: ['高', '中', '低'],
               datasets: [{ data: [severities['高']||0, severities['中']||0, severities['低']||0], backgroundColor: ['#e74c3c','#f39c12','#27ae60'] }]
             }
           });
@@ -737,7 +737,7 @@
     }
   }
 
-  // 报告生成（完整）
+  // ==================== 报告生成 (完整) ====================
   async function generateReport() {
     const type = document.getElementById('reportType').value;
     const monthVal = document.getElementById('reportMonth').value;
@@ -757,12 +757,7 @@
     const totalAnalysis = filtered.length;
     const totalConfirmedRisks = confirmed.reduce((acc, r) => acc + (r.confirmed_risks?.length || 0), 0);
     const rawTypeCount = {};
-    confirmed.forEach(r => {
-      (r.confirmed_risks || []).forEach(idx => {
-        const risk = r.ai_result?.risks?.[idx];
-        if (risk) { rawTypeCount[risk.type] = (rawTypeCount[risk.type]||0)+1; }
-      });
-    });
+    confirmed.forEach(r => { (r.confirmed_risks || []).forEach(idx => { const risk = r.ai_result?.risks?.[idx]; if (risk) { rawTypeCount[risk.type] = (rawTypeCount[risk.type]||0)+1; } }); });
     const typeCount = {};
     Object.entries(rawTypeCount).forEach(([type, count]) => { const normalized = normalizeRiskType(type); typeCount[normalized] = (typeCount[normalized]||0) + count; });
     const severityCount = {高:0,中:0,低:0};
@@ -816,11 +811,86 @@
     document.getElementById('regenerateBtn').addEventListener('click', generateReport);
   }
 
-  function exportReportExcel(stats, allRecords, confirmed, summary, period) { /* 同之前完整版 */ }
-  async function exportReportWordWithImages(stats, summary, period, records) { /* 同之前完整版 */ }
-  async function addLog(action, detail) { await supabaseClient.from('logs').insert({ user_id: currentUser.id, username: userProfile.username, action, detail, created_at: new Date().toISOString() }); }
-  function exportDetailedExcel(records) { /* 同之前完整版 */ }
-  async function showUserData(uid) { /* 同之前完整版 */ }
+  function exportReportExcel(stats, allRecords, confirmed, summary, period) {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['指标','数值'],['报告周期',period],['总分析次数',stats.totalAnalysis],['确认隐患总数',stats.totalConfirmedRisks],['变化',stats.change],['AI摘要',summary]]), '总览');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['隐患类型','数量'], ...Object.entries(stats.typeDistribution)]), '隐患类型');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['风险等级','数量'], ...Object.entries(stats.severityDistribution)]), '风险等级');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['用户','分析次数','确认隐患数'], ...Object.entries(stats.users).map(([u,d]) => [u,d.analysis,d.confirmed])]), '人员上报');
+    const detailData = [['记录ID','用户','上传时间','状态','隐患类型','风险等级','描述','整改建议','图片链接']];
+    confirmed.forEach(r => { const risks = r.ai_result?.risks || []; if (risks.length===0) detailData.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, '', '', '', '', r.image_path || '']); else risks.forEach(risk => detailData.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, risk.type, risk.severity, risk.description, risk.suggestion, r.image_path || ''])); });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detailData), '隐患明细');
+    XLSX.writeFile(wb, `安全报告_${period}.xlsx`);
+  }
+
+  async function exportReportWordWithImages(stats, summary, period, records) {
+    const filteredRecords = records.filter(r => r.status==='confirmed'||r.status==='fixed');
+    let rowsHtml = '';
+    for (const r of filteredRecords) {
+      const risks = r.ai_result?.risks || [];
+      for (const risk of risks) {
+        let imgSrc = '';
+        if (r.image_path) {
+          try {
+            const resp = await fetch(r.image_path); const blob = await resp.blob();
+            imgSrc = await new Promise(resolve => { const reader = new FileReader(); reader.onloadend = () => resolve(reader.result); reader.readAsDataURL(blob); });
+          } catch (e) {}
+        }
+        rowsHtml += `<tr>
+          <td>${new Date(r.upload_time).toLocaleString()}</td><td>${r.username}</td>
+          <td>${risk.type}</td><td>${risk.severity}</td><td>${risk.description}</td>
+          <td>${risk.suggestion}</td><td>${imgSrc ? `<img src="${imgSrc}" style="width:100px;">` : ''}</td>
+        </tr>`;
+      }
+    }
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"></head><body>
+      <h1>${period} 管网安全报告</h1><h2>AI 智能分析</h2><p>${summary}</p>
+      <h2>统计概览</h2><p>总分析次数：${stats.totalAnalysis}，确认隐患：${stats.totalConfirmedRisks}，变化：${stats.change}</p>
+      <h2>隐患类型分布</h2><ul>${Object.entries(stats.typeDistribution).map(([k,v])=>`<li>${k}: ${v}次</li>`).join('')}</ul>
+      <h2>风险等级分布</h2><ul>${Object.entries(stats.severityDistribution).map(([k,v])=>`<li>${k}: ${v}次</li>`).join('')}</ul>
+      <h2>人员上报</h2><table border="1"><tr><th>用户</th><th>分析次数</th><th>确认隐患</th></tr>${Object.entries(stats.users).map(([u,d])=>`<tr><td>${u}</td><td>${d.analysis}</td><td>${d.confirmed}</td></tr>`).join('')}</table>
+      <h2>隐患清单</h2><table border="1"><tr><th>时间</th><th>用户</th><th>类型</th><th>等级</th><th>描述</th><th>建议</th><th>现场图片</th></tr>${rowsHtml}</table>
+    </body></html>`;
+    const blob = new Blob(['\ufeff'+html], {type:'application/msword'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download=`安全报告_${period}.doc`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function addLog(action, detail) {
+    await supabaseClient.from('logs').insert({ user_id: currentUser.id, username: userProfile.username, action, detail, created_at: new Date().toISOString() });
+  }
+
+  function exportDetailedExcel(records) {
+    if (!records || records.length === 0) return alert('无数据可导出');
+    const headers = ['记录ID','用户','上传时间','状态','隐患类型','风险等级','隐患描述','整改建议','图片链接'];
+    const rows = [];
+    records.forEach(r => { const risks = r.ai_result?.risks || []; if (risks.length===0) rows.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, '', '', '', '', r.image_path || '']); else risks.forEach(risk => rows.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, risk.type, risk.severity, risk.description, risk.suggestion, r.image_path || ''])); });
+    const wb = XLSX.utils.book_new(); const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    XLSX.utils.book_append_sheet(wb, ws, '隐患数据'); XLSX.writeFile(wb, `隐患数据_${Date.now()}.xlsx`);
+  }
+
+  async function showUserData(uid) {
+    const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', uid).single();
+    const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', uid).order('upload_time', {ascending: false});
+    const detailDiv = document.getElementById('userDetail');
+    let html = `<div class="card"><h4>📋 ${profile?.username} 的数据</h4>
+      <p>累计分析：${risks?.length||0} | 确认隐患：${risks?.reduce((acc,r)=>acc+(r.confirmed_risks?.length||0),0)}</p>
+      <button class="btn btn-sm btn-danger" id="deleteUserDataBtn" data-uid="${uid}">删除所有数据</button>
+      <button class="btn btn-sm btn-outline" id="exportUserExcelBtn" data-uid="${uid}" style="margin-left:8px;">📥 导出 Excel</button>
+      <hr>`;
+    risks?.forEach(r => html += renderRecordCard(r));
+    html += '</div>';
+    detailDiv.innerHTML = html;
+    document.getElementById('deleteUserDataBtn').addEventListener('click', async () => {
+      if (!confirm('确定删除？')) return;
+      await supabaseClient.from('risks').delete().eq('user_id', uid);
+      addLog('删除数据', `管理员删除用户 ${uid} 全部数据`);
+      detailDiv.innerHTML = '<p>数据已删除</p>';
+    });
+    document.getElementById('exportUserExcelBtn').addEventListener('click', () => exportDetailedExcel(risks || []));
+    attachRecordEvents();
+  }
 
   init();
 </script>

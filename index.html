@@ -7,7 +7,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
-  <!-- 直接引入 PizZip 和 docxtemplater（使用稳定 CDN） -->
+  <!-- 使用 jsdelivr 稳定加载文档库 -->
   <script src="https://cdn.jsdelivr.net/npm/pizzip@3.1.4/dist/pizzip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/docxtemplater@3.48.1/build/docxtemplater.min.js"></script>
   <style>
@@ -484,7 +484,6 @@
     const { data: allRisks } = await supabaseClient.from('risks').select('*').in('id', selectedIds);
     if (!allRisks || allRisks.length === 0) return alert('未找到记录');
     try {
-      // 库已直接引入，无需 ensureDocumentLibs
       const { data: templateBlob, error } = await supabaseClient.storage.from(TEMPLATE_BUCKET).download(TEMPLATE_PATH);
       if (error) throw error;
       for (const record of allRisks) {
@@ -539,7 +538,22 @@
   }
 
   async function generateSingleDoc(templateBlob, record, extra) {
-    // 库已全局可用
+    // 保护：如果库未加载，直接使用手动模式
+    if (typeof PizZip === 'undefined' || typeof docxtemplater === 'undefined') {
+      const confirmedRisks = record.ai_result?.risks?.filter((_, idx) => record.confirmed_risks?.includes(idx)) || [];
+      const riskDescriptions = confirmedRisks.map(r => r.description).join('；');
+      const riskSuggestions = confirmedRisks.map(r => r.suggestion).join('；');
+      let imageBase64 = '';
+      if (record.image_path) {
+        try {
+          const resp = await fetch(record.image_path); const blob = await resp.blob();
+          imageBase64 = await new Promise(resolve => { const reader = new FileReader(); reader.onloadend = () => resolve(reader.result); reader.readAsDataURL(blob); });
+        } catch (e) {}
+      }
+      await generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions, extra);
+      return;
+    }
+
     const zip = new PizZip(await templateBlob.arrayBuffer());
     const doc = new docxtemplater(zip, { paragraphLoop: true, linebreaks: true, nullGetter: () => '' });
     const confirmedRisks = record.ai_result?.risks?.filter((_, idx) => record.confirmed_risks?.includes(idx)) || [];

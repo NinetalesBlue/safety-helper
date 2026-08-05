@@ -77,7 +77,7 @@
   let userProfile = null;
   let currentPreviewURL = null;
   let currentUploadFile = null;
-  let currentPieChart = null; // 用于下载饼图
+  let currentPieChart = null;
 
   async function logout() {
     await supabaseClient.auth.signOut();
@@ -346,13 +346,16 @@
               datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }]
             }
           });
-          document.getElementById('downloadTypeChartBtn').addEventListener('click', () => {
-            if (!currentPieChart) return;
-            const link = document.createElement('a');
-            link.download = `隐患类型分布_${new Date().toISOString().slice(0,10)}.png`;
-            link.href = currentPieChart.toBase64Image('image/png', 1);
-            link.click();
-          });
+          const downloadBtn = document.getElementById('downloadTypeChartBtn');
+          if (downloadBtn) {
+            downloadBtn.addEventListener('click', () => {
+              if (!currentPieChart) return;
+              const link = document.createElement('a');
+              link.download = `隐患类型分布_${new Date().toISOString().slice(0,10)}.png`;
+              link.href = currentPieChart.toBase64Image('image/png', 1);
+              link.click();
+            });
+          }
         }
         const sevCanvas = document.getElementById('severityChart');
         if (sevCanvas) new Chart(sevCanvas, { type: 'bar', data: { labels: ['高','中','低'], datasets: [{ data: [severities['高']||0, severities['中']||0, severities['低']||0], backgroundColor: ['#e74c3c','#f39c12','#27ae60'] }] } });
@@ -560,14 +563,31 @@
       const bytes = new Uint8Array(binaryStr.length);
       for (let i=0; i<binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
       zip.file(`word/media/${imgFileName}`, bytes);
-      const imageXml = `<w:drawing>...`; // 省略，与之前版本相同
+      const imageXml = `
+        <w:drawing>
+          <wp:inline distT="0" distB="0" distL="0" distR="0">
+            <wp:extent cx="3000000" cy="2250000"/>
+            <wp:docPr id="1" name="Picture 1"/>
+            <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:nvPicPr><pic:cNvPr id="0" name="Picture 1"/><pic:cNvPicPr/></pic:nvPicPr>
+                  <pic:blipFill><a:blip r:embed="${imgId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+                  <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3000000" cy="2250000"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr>
+                </pic:pic>
+              </a:graphicData>
+            </a:graphic>
+          </wp:inline>
+        </w:drawing>`;
       xml = xml.replace(/{隐患照片}/g, imageXml);
       let relsXml = zip.file('word/_rels/document.xml.rels')?.asText() || '';
       relsXml += `<Relationship Id="${imgId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${imgFileName}"/>`;
       zip.file('word/_rels/document.xml.rels', relsXml);
       let contentTypes = zip.file('[Content_Types].xml')?.asText() || '';
-      if (!contentTypes.includes('image/jpeg')) { contentTypes = contentTypes.replace('</Types>', '<Default Extension="jpg" ContentType="image/jpeg"/></Types>'); }
-      zip.file('[Content_Types].xml', contentTypes);
+      if (!contentTypes.includes('image/jpeg')) {
+        contentTypes = contentTypes.replace('</Types>', '<Default Extension="jpg" ContentType="image/jpeg"/></Types>');
+        zip.file('[Content_Types].xml', contentTypes);
+      }
     }
     zip.file('word/document.xml', xml);
     const blob = zip.generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
@@ -639,16 +659,20 @@
         const canvas = document.getElementById('adminTypeChart');
         if (canvas) {
           currentPieChart = new Chart(canvas, { type: 'pie', data: { labels: Object.keys(typeCount), datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }] } });
-          document.getElementById('downloadAdminChartBtn').addEventListener('click', () => {
-            if (!currentPieChart) return;
-            const link = document.createElement('a');
-            link.download = `全项目隐患分布_${new Date().toISOString().slice(0,10)}.png`;
-            link.href = currentPieChart.toBase64Image('image/png', 1);
-            link.click();
-          });
+          const downloadBtn = document.getElementById('downloadAdminChartBtn');
+          if (downloadBtn) {
+            downloadBtn.addEventListener('click', () => {
+              if (!currentPieChart) return;
+              const link = document.createElement('a');
+              link.download = `全项目隐患分布_${new Date().toISOString().slice(0,10)}.png`;
+              link.href = currentPieChart.toBase64Image('image/png', 1);
+              link.click();
+            });
+          }
         }
       }
-      document.getElementById('exportExcelBtn').addEventListener('click', () => exportDetailedExcel(allRisks || []));
+      const exportBtn = document.getElementById('exportExcelBtn');
+      if (exportBtn) exportBtn.addEventListener('click', () => exportDetailedExcel(allRisks || []));
     } else if (page === 'users') {
       const { data: profiles } = await supabaseClient.from('profiles').select('*');
       const { data: allRisks } = await supabaseClient.from('risks').select('*');
@@ -693,7 +717,8 @@
         </div>
         <div id="reportPreview" class="card" style="display:none;"></div>
       `;
-      document.getElementById('genReportBtn').addEventListener('click', generateReport);
+      const genBtn = document.getElementById('genReportBtn');
+      if (genBtn) genBtn.addEventListener('click', generateReport);
     } else if (page === 'logs') {
       const { data: logs } = await supabaseClient.from('logs').select('*').order('created_at', { ascending: false }).limit(100);
       let html = '<h3>📜 操作日志</h3>';
@@ -703,7 +728,7 @@
     }
   }
 
-  // 报告生成相关函数 (完整)
+  // 报告生成
   async function generateReport() {
     const type = document.getElementById('reportType').value;
     const monthVal = document.getElementById('reportMonth').value;
@@ -722,13 +747,14 @@
     const confirmed = filtered.filter(r => r.status === 'confirmed' || r.status === 'fixed');
     const totalAnalysis = filtered.length;
     const totalConfirmedRisks = confirmed.reduce((acc, r) => acc + (r.confirmed_risks?.length || 0), 0);
-    const typeCount = {}; const rawTypeCount = {};
+    const rawTypeCount = {};
     confirmed.forEach(r => {
       (r.confirmed_risks || []).forEach(idx => {
         const risk = r.ai_result?.risks?.[idx];
         if (risk) { rawTypeCount[risk.type] = (rawTypeCount[risk.type]||0)+1; }
       });
     });
+    const typeCount = {};
     Object.entries(rawTypeCount).forEach(([type, count]) => {
       const normalized = normalizeRiskType(type);
       typeCount[normalized] = (typeCount[normalized]||0) + count;

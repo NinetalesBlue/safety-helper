@@ -7,8 +7,6 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/pizzip@3.1.4/dist/pizzip.min.js"></script>
-  <script src="https://unpkg.com/docxtemplater@3.48.1/build/docxtemplater.min.js"></script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fb; color: #2c3e50; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 12px; }
@@ -78,6 +76,28 @@
   let currentPreviewURL = null;
   let currentUploadFile = null;
   let currentPieChart = null;
+
+  // ==================== 动态加载文档库 ====================
+  async function ensureDocumentLibs() {
+    if (typeof PizZip === 'undefined') {
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/pizzip@3.1.4/dist/pizzip.min.js';
+        script.onload = resolve;
+        script.onerror = () => reject(new Error('PizZip 加载失败'));
+        document.head.appendChild(script);
+      });
+    }
+    if (typeof docxtemplater === 'undefined') {
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://unpkg.com/docxtemplater@3.48.1/build/docxtemplater.min.js';
+        script.onload = resolve;
+        script.onerror = () => reject(new Error('docxtemplater 加载失败'));
+        document.head.appendChild(script);
+      });
+    }
+  }
 
   async function logout() {
     await supabaseClient.auth.signOut();
@@ -181,9 +201,7 @@
     '车辆伤害': '车辆伤害风险',
     '中毒窒息': '中毒窒息风险',
   };
-  function normalizeRiskType(type) {
-    return RISK_TYPE_MAP[type] || type;
-  }
+  function normalizeRiskType(type) { return RISK_TYPE_MAP[type] || type; }
 
   // ==================== 安全员界面 ====================
   function renderSafetyUI() {
@@ -302,10 +320,7 @@
       confirmed.forEach(r => {
         (r.confirmed_risks || []).forEach(idx => {
           const risk = r.ai_result?.risks?.[idx];
-          if (risk) {
-            rawTypeCount[risk.type] = (rawTypeCount[risk.type]||0)+1;
-            totalConfirmed++;
-          }
+          if (risk) { rawTypeCount[risk.type] = (rawTypeCount[risk.type]||0)+1; totalConfirmed++; }
         });
       });
       const typeCount = {};
@@ -475,6 +490,7 @@
     const { data: allRisks } = await supabaseClient.from('risks').select('*').in('id', selectedIds);
     if (!allRisks || allRisks.length === 0) return alert('未找到记录');
     try {
+      await ensureDocumentLibs();
       const { data: templateBlob, error } = await supabaseClient.storage.from(TEMPLATE_BUCKET).download(TEMPLATE_PATH);
       if (error) throw error;
       for (const record of allRisks) {
@@ -529,7 +545,7 @@
   }
 
   async function generateSingleDoc(templateBlob, record, extra) {
-    if (typeof docxtemplater === 'undefined') throw new Error('文档组件未加载，请刷新');
+    await ensureDocumentLibs();
     const zip = new PizZip(await templateBlob.arrayBuffer());
     const doc = new docxtemplater(zip, { paragraphLoop: true, linebreaks: true, nullGetter: () => '' });
     const confirmedRisks = record.ai_result?.risks?.filter((_, idx) => record.confirmed_risks?.includes(idx)) || [];
@@ -557,6 +573,7 @@
   }
 
   async function generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions, extra) {
+    await ensureDocumentLibs();
     const zip = new PizZip(await templateBlob.arrayBuffer());
     let xml = zip.file('word/document.xml').asText();
     xml = xml.replace(/{编号}/g, extra.serial);
@@ -737,7 +754,7 @@
     }
   }
 
-  // ==================== 报告生成 (完整) ====================
+  // ==================== 报告生成 ====================
   async function generateReport() {
     const type = document.getElementById('reportType').value;
     const monthVal = document.getElementById('reportMonth').value;

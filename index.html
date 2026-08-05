@@ -7,6 +7,9 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+  <!-- 直接引入 PizZip 和 docxtemplater（使用稳定 CDN） -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pizzip/3.1.4/pizzip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/docxtemplater/3.48.1/docxtemplater.min.js"></script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fb; color: #2c3e50; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 12px; }
@@ -80,34 +83,6 @@
   let currentUploadFile = null;
   let currentPieChart = null;
   let cachedAllRisks = null;
-
-  // ==================== 动态加载文档库 ====================
-  async function ensureDocumentLibs() {
-    if (typeof PizZip === 'undefined') {
-      await new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/pizzip@3.1.4/dist/pizzip.min.js';
-        script.onload = resolve;
-        script.onerror = () => reject(new Error('PizZip 加载失败'));
-        document.head.appendChild(script);
-      });
-    }
-    if (typeof docxtemplater === 'undefined') {
-      await new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/docxtemplater@3.48.1/build/docxtemplater.min.js';
-        script.onload = resolve;
-        script.onerror = async () => {
-          const script2 = document.createElement('script');
-          script2.src = 'https://unpkg.com/docxtemplater@3.48.1/build/docxtemplater.min.js';
-          script2.onload = resolve;
-          script2.onerror = () => reject(new Error('docxtemplater 加载失败'));
-          document.head.appendChild(script2);
-        };
-        document.head.appendChild(script);
-      });
-    }
-  }
 
   async function logout() {
     await supabaseClient.auth.signOut();
@@ -393,7 +368,11 @@
             type: 'bar',
             data: {
               labels: ['高', '中', '低'],
-              datasets: [{ data: [severities['高']||0, severities['中']||0, severities['低']||0], backgroundColor: ['#e74c3c','#f39c12','#27ae60'] }]
+              datasets: [{
+                label: '隐患数量',
+                data: [severities['高']||0, severities['中']||0, severities['低']||0],
+                backgroundColor: ['#e74c3c','#f39c12','#27ae60']
+              }]
             }
           });
         }
@@ -505,7 +484,7 @@
     const { data: allRisks } = await supabaseClient.from('risks').select('*').in('id', selectedIds);
     if (!allRisks || allRisks.length === 0) return alert('未找到记录');
     try {
-      await ensureDocumentLibs();
+      // 库已直接引入，无需 ensureDocumentLibs
       const { data: templateBlob, error } = await supabaseClient.storage.from(TEMPLATE_BUCKET).download(TEMPLATE_PATH);
       if (error) throw error;
       for (const record of allRisks) {
@@ -560,7 +539,7 @@
   }
 
   async function generateSingleDoc(templateBlob, record, extra) {
-    await ensureDocumentLibs();
+    // 库已全局可用
     const zip = new PizZip(await templateBlob.arrayBuffer());
     const doc = new docxtemplater(zip, { paragraphLoop: true, linebreaks: true, nullGetter: () => '' });
     const confirmedRisks = record.ai_result?.risks?.filter((_, idx) => record.confirmed_risks?.includes(idx)) || [];
@@ -675,7 +654,9 @@
       }
       renderOverviewStats(content, 'all');
     } else if (page === 'users') {
-      const { data: profiles } = await supabaseClient.from('profiles').select('*');
+      let { data: profiles } = await supabaseClient.from('profiles').select('*');
+      // 过滤掉管理员账户
+      if (profiles) profiles = profiles.filter(p => p.role !== 'admin');
       const { data: allRisks } = await supabaseClient.from('risks').select('*');
       let rows = '';
       if (profiles && profiles.length > 0) {

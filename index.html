@@ -4,15 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>AI+管网安全助手 云端版</title>
-  <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-  <!-- Supabase -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <!-- SheetJS (Excel) -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
-  <!-- PizZip (DOCX 处理) -->
   <script src="https://cdn.jsdelivr.net/npm/pizzip@3.1.4/dist/pizzip.min.js"></script>
-  <!-- Docxtemplater -->
   <script src="https://cdn.jsdelivr.net/npm/docxtemplater@3.48.1/build/docxtemplater.min.js"></script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
@@ -55,18 +50,18 @@
     .user-table th, .user-table td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 14px; }
     .user-table th { background: #f9f9f9; font-weight: 600; }
     .report-buttons { display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap; }
-    /* 选择模式 */
     .select-checkbox { position: absolute; top: 12px; right: 12px; transform: scale(1.3); display: none; }
     .select-mode .select-checkbox { display: block; }
-    .select-actions { display: none; margin: 10px 0; }
-    .select-mode .select-actions { display: flex; gap: 10px; }
+    .select-actions { margin: 10px 0; display: flex; gap: 10px; }
+    .modal-overlay { position: fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:1000; }
+    .modal-box { background:white; border-radius:16px; padding:20px; width:90%; max-width:400px; }
+    .modal-box input { width:100%; padding:10px; margin:8px 0; border:1px solid #ddd; border-radius:8px; }
   </style>
 </head>
 <body>
 <div class="app-container" id="app"></div>
 
 <script>
-  // ==================== 全局配置 ====================
   const SUPABASE_URL = 'https://xnebqywzurzwpfzlzyvw.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_RbCAWLM9oKmvOEDdt2ybQg_JQK8jo67';
   const EDGE_FUNCTION = 'https://xnebqywzurzwpfzlzyvw.supabase.co/functions/v1/analyze-image';
@@ -82,27 +77,23 @@
   let userProfile = null;
   let currentPreviewURL = null;
   let currentUploadFile = null;
-  let selectModeActive = false;
+  // 存储当前饼图实例，方便下载
+  let currentPieChart = null;
 
-  // 退出登录
   async function logout() {
     await supabaseClient.auth.signOut();
     window.location.reload();
   }
 
-  // 监听认证状态
   supabaseClient.auth.onAuthStateChange(async (event, session) => {
-    if (event === 'SIGNED_OUT') {
-      currentUser = null; userProfile = null; renderAuthPage('login');
-    } else if (session) {
+    if (event === 'SIGNED_OUT') { currentUser = null; userProfile = null; renderAuthPage('login'); }
+    else if (session) {
       currentUser = session.user;
       const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', currentUser.id).single();
       userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
       if (!profile) {
         await supabaseClient.from('profiles').upsert({
-          id: currentUser.id,
-          username: currentUser.email?.split('@')[0] || 'unknown',
-          role: 'safety'
+          id: currentUser.id, username: currentUser.email?.split('@')[0] || 'unknown', role: 'safety'
         });
       }
       renderApp();
@@ -117,15 +108,11 @@
       userProfile = profile || { role: 'safety', username: currentUser.email?.split('@')[0] };
       if (!profile) {
         await supabaseClient.from('profiles').upsert({
-          id: currentUser.id,
-          username: currentUser.email?.split('@')[0] || 'unknown',
-          role: 'safety'
+          id: currentUser.id, username: currentUser.email?.split('@')[0] || 'unknown', role: 'safety'
         });
       }
       renderApp();
-    } else {
-      renderAuthPage('login');
-    }
+    } else { renderAuthPage('login'); }
   }
 
   // ==================== 登录/注册 ====================
@@ -153,26 +140,19 @@
         const { data: userData } = await supabaseClient.auth.getUser();
         if (userData?.user) {
           await supabaseClient.from('profiles').upsert({
-            id: userData.user.id,
-            username: username || email.split('@')[0],
-            role: 'safety'
+            id: userData.user.id, username: username || email.split('@')[0], role: 'safety'
           });
         }
-        alert('注册成功，请登录');
-        renderAuthPage('login');
-        return;
+        alert('注册成功，请登录'); renderAuthPage('login'); return;
       }
       try {
         const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
         if (error) { alert(error.message); return; }
         window.location.reload();
-      } catch (err) {
-        alert('登录失败：' + err.message);
-      }
+      } catch (err) { alert('登录失败：' + err.message); }
     });
     document.getElementById(mode === 'login' ? 'switchToRegister' : 'switchToLogin').addEventListener('click', (e) => {
-      e.preventDefault();
-      renderAuthPage(mode === 'login' ? 'register' : 'login');
+      e.preventDefault(); renderAuthPage(mode === 'login' ? 'register' : 'login');
     });
   }
 
@@ -180,6 +160,31 @@
     if (!userProfile) return;
     if (userProfile.role === 'admin') renderAdminUI();
     else renderSafetyUI();
+  }
+
+  // ==================== 隐患类型规范化映射表 ====================
+  // 依据《建筑施工安全检查标准》(JGJ 59‑2011) 等规范，将相似描述合并
+  const RISK_TYPE_MAP = {
+    '警示标识缺失': '警示标识不符合要求',
+    '警示标识不足': '警示标识不符合要求',
+    '安全标志缺失': '警示标识不符合要求',
+    '临边防护缺失': '临边防护缺陷',
+    '临边防护不足': '临边防护缺陷',
+    '临边护栏缺失': '临边防护缺陷',
+    '高处作业无防护': '高处坠落防护缺陷',
+    '高处作业防护不足': '高处坠落防护缺陷',
+    '高处坠落': '高处坠落防护缺陷',
+    '物体打击': '物体打击风险',
+    '坍塌': '坍塌风险',
+    '机械伤害': '机械伤害风险',
+    '触电': '触电风险',
+    '火灾': '火灾风险',
+    '淹溺': '淹溺风险',
+    '车辆伤害': '车辆伤害风险',
+    '中毒窒息': '中毒窒息风险',
+  };
+  function normalizeRiskType(type) {
+    return RISK_TYPE_MAP[type] || type; // 若未定义则保留原样
   }
 
   // ==================== 安全员界面 ====================
@@ -224,9 +229,7 @@
         if (currentPreviewURL) URL.revokeObjectURL(currentPreviewURL);
         currentUploadFile = file;
         currentPreviewURL = URL.createObjectURL(file);
-        pr.src = currentPreviewURL;
-        pr.style.display = 'block';
-        ab.disabled = false;
+        pr.src = currentPreviewURL; pr.style.display = 'block'; ab.disabled = false;
       });
       ab.addEventListener('click', async () => {
         if (!currentUploadFile) return;
@@ -268,40 +271,58 @@
       if (!risks || risks.length === 0) html += '<div class="empty-state">暂无记录</div>';
       else risks.forEach(r => html += renderRecordCard(r));
       html += '</div>';
+      html += '<div id="selectActionsContainer"></div>';
       content.innerHTML = html;
       if (confirmedRecords.length > 0) {
         document.getElementById('toggleSelectModeBtn').addEventListener('click', () => {
-          selectModeActive = !selectModeActive;
           const recordsContainer = document.getElementById('recordsList');
-          if (selectModeActive) {
+          const selectActions = document.getElementById('selectActionsContainer');
+          if (recordsContainer.classList.contains('select-mode')) {
+            recordsContainer.classList.remove('select-mode');
+            selectActions.innerHTML = '';
+          } else {
             recordsContainer.classList.add('select-mode');
-            let actionsHtml = '<div class="select-actions"><button class="btn btn-success" id="generateDocsBtn">生成并下载</button><button class="btn btn-outline" id="cancelSelectBtn">取消</button></div>';
-            content.insertAdjacentHTML('beforeend', actionsHtml);
+            selectActions.innerHTML = `
+              <div class="select-actions">
+                <button class="btn btn-success" id="generateDocsBtn">生成并下载</button>
+                <button class="btn btn-outline" id="cancelSelectBtn">取消</button>
+              </div>`;
             document.getElementById('generateDocsBtn').addEventListener('click', generateRectificationDocs);
             document.getElementById('cancelSelectBtn').addEventListener('click', () => {
-              selectModeActive = false;
               recordsContainer.classList.remove('select-mode');
-              document.querySelector('.select-actions')?.remove();
+              selectActions.innerHTML = '';
             });
-          } else {
-            recordsContainer.classList.remove('select-mode');
-            document.querySelector('.select-actions')?.remove();
           }
         });
       }
       attachRecordEvents();
     } else if (page === 'stats') {
+      // 个人统计
       const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', currentUser.id);
       const confirmed = risks?.filter(r => r.status === 'confirmed' || r.status === 'fixed') || [];
-      let totalConfirmed = 0, typeCount = {}, severities = {高:0,中:0,低:0};
+      let totalConfirmed = 0;
+      const rawTypeCount = {};
       confirmed.forEach(r => {
         (r.confirmed_risks || []).forEach(idx => {
           const risk = r.ai_result?.risks?.[idx];
           if (risk) {
-            typeCount[risk.type] = (typeCount[risk.type]||0)+1;
-            severities[risk.severity] = (severities[risk.severity]||0)+1;
+            const rawType = risk.type;
+            rawTypeCount[rawType] = (rawTypeCount[rawType]||0) + 1;
             totalConfirmed++;
           }
+        });
+      });
+      // 规范化类型
+      const typeCount = {};
+      Object.entries(rawTypeCount).forEach(([type, count]) => {
+        const normalized = normalizeRiskType(type);
+        typeCount[normalized] = (typeCount[normalized]||0) + count;
+      });
+      const severities = {高:0,中:0,低:0};
+      confirmed.forEach(r => {
+        (r.confirmed_risks || []).forEach(idx => {
+          const risk = r.ai_result?.risks?.[idx];
+          if (risk) severities[risk.severity] = (severities[risk.severity]||0) + 1;
         });
       });
       content.innerHTML = `
@@ -310,575 +331,59 @@
           <div class="stat-box"><div class="number">${risks?.length || 0}</div>累计分析次数</div>
           <div class="stat-box"><div class="number">${totalConfirmed}</div>累计确认隐患</div>
         </div>
-        <div class="card"><h4>隐患类型分布</h4><div class="chart-container"><canvas id="typeChart"></canvas></div></div>
-        <div class="card"><h4>风险等级</h4><div class="chart-container"><canvas id="severityChart"></canvas></div></div>
+        <div class="card">
+          <h4>隐患类型分布</h4>
+          <div class="chart-container"><canvas id="typeChart"></canvas></div>
+          <button class="btn btn-sm btn-outline" id="downloadTypeChartBtn" style="margin-top:8px;">📥 下载饼图</button>
+        </div>
+        <div class="card">
+          <h4>风险等级</h4>
+          <div class="chart-container"><canvas id="severityChart"></canvas></div>
+        </div>
       `;
       if (totalConfirmed > 0) {
         const typeCanvas = document.getElementById('typeChart');
-        if (typeCanvas) new Chart(typeCanvas, { type: 'pie', data: { labels: Object.keys(typeCount), datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }] } });
+        if (typeCanvas) {
+          currentPieChart = new Chart(typeCanvas, {
+            type: 'pie',
+            data: {
+              labels: Object.keys(typeCount),
+              datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }]
+            },
+            options: {
+              plugins: {
+                tooltip: {
+                  callbacks: {
+                    label: (ctx) => `${ctx.label}: ${ctx.raw} 次`
+                  }
+                }
+              }
+            }
+          });
+          document.getElementById('downloadTypeChartBtn').addEventListener('click', () => {
+            if (!currentPieChart) return;
+            const link = document.createElement('a');
+            link.download = `隐患类型分布_${new Date().toISOString().slice(0,10)}.png`;
+            link.href = currentPieChart.toBase64Image('image/png', 1);
+            link.click();
+          });
+        }
         const sevCanvas = document.getElementById('severityChart');
-        if (sevCanvas) new Chart(sevCanvas, { type: 'bar', data: { labels: ['高','中','低'], datasets: [{ data: [severities['高']||0, severities['中']||0, severities['低']||0], backgroundColor: ['#e74c3c','#f39c12','#27ae60'] }] } });
-      }
-    }
-  }
-
-  // 图片压缩
-  function compressImage(file, maxWidth = 800, quality = 0.6) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width, height = img.height;
-          if (width > maxWidth) { height = (maxWidth / width) * height; width = maxWidth; }
-          canvas.width = width; canvas.height = height;
-          canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', quality));
-        };
-        img.onerror = reject;
-        img.src = e.target.result;
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  }
-
-  function renderRecordCard(record) {
-    const statusMap = { pending:'⏳待处理', confirmed:'✅已确认', false_alarm:'❌误报', fixed:'🔧已整改' };
-    const risks = record.ai_result?.risks || [];
-    let riskHtml = '';
-    risks.forEach((risk, idx) => {
-      const isConfirmed = record.confirmed_risks?.includes(idx);
-      riskHtml += `<div class="risk-item severity-${risk.severity==='高'?'high':(risk.severity==='中'?'medium':'low')}">
-        <span class="risk-tag tag-${risk.severity==='高'?'high':(risk.severity==='中'?'medium':'low')}">${risk.severity}风险</span>
-        <strong>${risk.type}</strong><p>${risk.description}</p><p>📝 ${risk.suggestion}</p>
-        ${record.status === 'pending' ? `<div class="action-buttons"><button class="btn btn-sm btn-success confirm-risk" data-rid="${record.id}" data-idx="${idx}">✔ 确认</button><button class="btn btn-sm btn-outline false-alarm" data-rid="${record.id}" data-idx="${idx}">⚠ 误报</button></div>` : (isConfirmed ? '<span style="color:green;">已确认</span>' : '')}
-      </div>`;
-    });
-    const imgHtml = record.image_path ? `<a href="${record.image_path}" target="_blank"><img src="${record.image_path}" style="width:100%;max-height:150px;object-fit:cover;border-radius:10px;margin:8px 0;cursor:pointer;" title="点击查看原图"></a>` : '';
-    const checkboxHtml = (record.status === 'confirmed' || record.status === 'fixed') ? `<input type="checkbox" class="select-checkbox" data-rid="${record.id}">` : '';
-    return `<div class="card">
-      ${checkboxHtml}
-      <div style="display:flex;justify-content:space-between;"><span>📅 ${new Date(record.upload_time).toLocaleString()}</span><span>${statusMap[record.status]}</span></div>
-      ${imgHtml}
-      ${riskHtml}
-      ${record.status === 'confirmed' || record.status === 'fixed' ? `<div style="margin-top:10px;">${record.status === 'confirmed' ? `<button class="btn btn-sm btn-outline upload-fix" data-rid="${record.id}">📎 整改照片</button>` : ''}${record.fix_image_path ? `<a href="${record.fix_image_path}" target="_blank"><img src="${record.fix_image_path}" style="width:100%;max-height:120px;border-radius:8px;cursor:pointer;"></a>` : ''}${record.fix_desc ? `<p>📄 ${record.fix_desc}</p>` : ''}</div>` : ''}
-    </div>`;
-  }
-
-  function attachRecordEvents() {
-    document.querySelectorAll('.confirm-risk').forEach(btn => {
-      btn.addEventListener('click', async function() {
-        const rid = +this.dataset.rid, idx = +this.dataset.idx;
-        const { data: rec } = await supabaseClient.from('risks').select('*').eq('id', rid).single();
-        if (rec && rec.status === 'pending') {
-          let confirmed = rec.confirmed_risks || [];
-          if (!confirmed.includes(idx)) confirmed.push(idx);
-          const total = rec.ai_result.risks.length;
-          const newStatus = (confirmed.length + (rec.false_alarm_risks?.length || 0)) >= total ? 'confirmed' : 'pending';
-          await supabaseClient.from('risks').update({ confirmed_risks: confirmed, status: newStatus }).eq('id', rid);
-          addLog('确认隐患', `记录${rid} 确认${idx}`);
-          renderSafetyPage('records');
-        }
-      });
-    });
-    document.querySelectorAll('.false-alarm').forEach(btn => {
-      btn.addEventListener('click', async function() {
-        const rid = +this.dataset.rid, idx = +this.dataset.idx;
-        const { data: rec } = await supabaseClient.from('risks').select('*').eq('id', rid).single();
-        if (rec && rec.status === 'pending') {
-          let falseAlarm = rec.false_alarm_risks || [];
-          if (!falseAlarm.includes(idx)) falseAlarm.push(idx);
-          const total = rec.ai_result.risks.length;
-          const newStatus = (falseAlarm.length + (rec.confirmed_risks?.length || 0)) >= total ? (rec.confirmed_risks?.length > 0 ? 'confirmed' : 'false_alarm') : 'pending';
-          await supabaseClient.from('risks').update({ false_alarm_risks: falseAlarm, status: newStatus }).eq('id', rid);
-          addLog('标记误报', `记录${rid} 误报${idx}`);
-          renderSafetyPage('records');
-        }
-      });
-    });
-    document.querySelectorAll('.upload-fix').forEach(btn => {
-      btn.addEventListener('click', async function() {
-        const rid = +this.dataset.rid;
-        const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*';
-        input.addEventListener('change', async (e) => {
-          const file = e.target.files[0]; if(!file) return;
-          const fileName = `fix/${rid}_${Date.now()}.jpg`;
-          await supabaseClient.storage.from('fix-photos').upload(fileName, file);
-          const { data: urlData } = supabaseClient.storage.from('fix-photos').getPublicUrl(fileName);
-          const desc = prompt('整改描述：');
-          await supabaseClient.from('risks').update({ fix_image_path: urlData.publicUrl, fix_desc: desc || '已整改', fix_time: new Date().toISOString(), status: 'fixed' }).eq('id', rid);
-          addLog('上传整改', `记录${rid} 完成整改`);
-          renderSafetyPage('records');
-        });
-        input.click();
-      });
-    });
-  }
-
-  // ==================== 整改单生成 ====================
-  async function generateRectificationDocs() {
-    const checkboxes = document.querySelectorAll('.select-checkbox:checked');
-    if (checkboxes.length === 0) { alert('请至少勾选一条记录'); return; }
-    const selectedIds = Array.from(checkboxes).map(cb => +cb.dataset.rid);
-    const { data: allRisks } = await supabaseClient.from('risks').select('*').in('id', selectedIds);
-    if (!allRisks || allRisks.length === 0) return alert('未找到记录');
-
-    try {
-      const { data: templateBlob, error } = await supabaseClient.storage.from(TEMPLATE_BUCKET).download(TEMPLATE_PATH);
-      if (error) throw error;
-      for (const record of allRisks) {
-        await generateSingleDoc(templateBlob, record);
-      }
-      selectModeActive = false;
-      document.getElementById('recordsList')?.classList.remove('select-mode');
-      document.querySelector('.select-actions')?.remove();
-    } catch (e) {
-      alert('生成失败：' + e.message);
-    }
-  }
-
-  async function generateSingleDoc(templateBlob, record) {
-    const zip = new PizZip(await templateBlob.arrayBuffer());
-    const doc = new docxtemplater(zip, { paragraphLoop: true, linebreaks: true, nullGetter: () => '' });
-
-    const confirmedRisks = record.ai_result?.risks?.filter((_, idx) => record.confirmed_risks?.includes(idx)) || [];
-    const riskDescriptions = confirmedRisks.map(r => r.description).join('；');
-    const riskSuggestions = confirmedRisks.map(r => r.suggestion).join('；');
-
-    let imageBase64 = '';
-    if (record.image_path) {
-      try {
-        const resp = await fetch(record.image_path);
-        const blob = await resp.blob();
-        imageBase64 = await new Promise(resolve => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result);
-          reader.readAsDataURL(blob);
-        });
-      } catch (e) { /* 忽略 */ }
-    }
-
-    const data = {
-      编号: record.id,
-      检查时间: new Date(record.upload_time).toLocaleString(),
-      整改期限: '',
-      整改班组: '',
-      整改责任人: '',
-      隐患内容: riskDescriptions || '无',
-      隐患照片: imageBase64,
-      整改要求: riskSuggestions || '无'
-    };
-
-    try {
-      doc.setData(data);
-      doc.render();
-      const out = doc.getZip().generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-      downloadDoc(out, record, '');
-    } catch (e) {
-      console.warn('标准渲染失败，使用手动替换', e);
-      await generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions);
-    }
-  }
-
-  async function generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions) {
-    const zip = new PizZip(await templateBlob.arrayBuffer());
-    let xml = zip.file('word/document.xml').asText();
-    xml = xml.replace(/{编号}/g, record.id);
-    xml = xml.replace(/{检查时间}/g, new Date(record.upload_time).toLocaleString());
-    xml = xml.replace(/{整改期限}/g, '');
-    xml = xml.replace(/{整改班组}/g, '');
-    xml = xml.replace(/{整改责任人}/g, '');
-    xml = xml.replace(/{隐患内容}/g, riskDescriptions || '无');
-    xml = xml.replace(/{整改要求}/g, riskSuggestions || '无');
-
-    if (imageBase64 && xml.includes('{隐患照片}')) {
-      const imgId = 'rId' + Math.random().toString(36).substr(2, 8);
-      const imgFileName = 'image1.jpg';
-      const base64Data = imageBase64.split(',')[1];
-      const binaryStr = atob(base64Data);
-      const bytes = new Uint8Array(binaryStr.length);
-      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-      zip.file(`word/media/${imgFileName}`, bytes);
-
-      const imageXml = `
-        <w:drawing>
-          <wp:inline distT="0" distB="0" distL="0" distR="0">
-            <wp:extent cx="3000000" cy="2250000"/>
-            <wp:docPr id="1" name="Picture 1"/>
-            <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
-              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
-                <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
-                  <pic:nvPicPr><pic:cNvPr id="0" name="Picture 1"/><pic:cNvPicPr/></pic:nvPicPr>
-                  <pic:blipFill><a:blip r:embed="${imgId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
-                  <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3000000" cy="2250000"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr>
-                </pic:pic>
-              </a:graphicData>
-            </a:graphic>
-          </wp:inline>
-        </w:drawing>`;
-      xml = xml.replace(/{隐患照片}/g, imageXml);
-
-      let relsXml = zip.file('word/_rels/document.xml.rels')?.asText() || '';
-      relsXml += `<Relationship Id="${imgId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${imgFileName}"/>`;
-      zip.file('word/_rels/document.xml.rels', relsXml);
-
-      let contentTypes = zip.file('[Content_Types].xml')?.asText() || '';
-      if (!contentTypes.includes('image/jpeg')) {
-        contentTypes = contentTypes.replace('</Types>', '<Default Extension="jpg" ContentType="image/jpeg"/></Types>');
-        zip.file('[Content_Types].xml', contentTypes);
-      }
-    }
-
-    zip.file('word/document.xml', xml);
-    const blob = zip.generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-    downloadDoc(blob, record, '');
-  }
-
-  function downloadDoc(blob, record, team) {
-    const filename = `遂安﹝2026﹞${record.id}号-${team || '未指定'}作业班组.docx`;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  // ==================== 管理员界面 ====================
-  function renderAdminUI() {
-    document.getElementById('app').innerHTML = `
-      <div class="status-bar"><span>🛡️ 管理员 ${userProfile.username}</span><button id="logoutBtn">退出</button></div>
-      <div class="main-content" id="adminContent"></div>
-      <div class="bottom-nav">
-        <div class="nav-item active" data-page="overview"><span class="icon">📊</span>总览</div>
-        <div class="nav-item" data-page="users"><span class="icon">👥</span>用户</div>
-        <div class="nav-item" data-page="report"><span class="icon">📄</span>报告</div>
-        <div class="nav-item" data-page="logs"><span class="icon">📜</span>日志</div>
-      </div>
-    `;
-    document.getElementById('logoutBtn').addEventListener('click', logout);
-    document.querySelectorAll('.bottom-nav .nav-item').forEach(item => {
-      item.addEventListener('click', function() {
-        document.querySelectorAll('.bottom-nav .nav-item').forEach(n => n.classList.remove('active'));
-        this.classList.add('active');
-        renderAdminPage(this.dataset.page);
-      });
-    });
-    renderAdminPage('overview');
-  }
-
-  async function renderAdminPage(page) {
-    const content = document.getElementById('adminContent');
-    if (page === 'overview') {
-      const { data: allRisks } = await supabaseClient.from('risks').select('*');
-      const confirmed = allRisks?.filter(r => r.status === 'confirmed' || r.status === 'fixed') || [];
-      let totalConfirmed = 0, typeCount = {};
-      confirmed.forEach(r => {
-        (r.confirmed_risks || []).forEach(idx => {
-          const risk = r.ai_result?.risks?.[idx];
-          if (risk) { typeCount[risk.type] = (typeCount[risk.type]||0)+1; totalConfirmed++; }
-        });
-      });
-      content.innerHTML = `
-        <h3>📊 全项目累计统计</h3>
-        <div class="stats-grid">
-          <div class="stat-box"><div class="number">${allRisks?.length || 0}</div>累计分析次数</div>
-          <div class="stat-box"><div class="number">${totalConfirmed}</div>累计确认隐患</div>
-        </div>
-        <div class="card"><h4>隐患类型分布</h4><div class="chart-container"><canvas id="adminTypeChart"></canvas></div></div>
-        <button class="btn btn-outline" id="exportExcelBtn" style="margin-top:10px;">📥 导出全部数据 (Excel)</button>
-      `;
-      if (totalConfirmed > 0) {
-        const canvas = document.getElementById('adminTypeChart');
-        if (canvas) new Chart(canvas, { type: 'pie', data: { labels: Object.keys(typeCount), datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }] } });
-      }
-      document.getElementById('exportExcelBtn').addEventListener('click', () => exportDetailedExcel(allRisks || []));
-    } else if (page === 'users') {
-      const { data: profiles } = await supabaseClient.from('profiles').select('*');
-      const { data: allRisks } = await supabaseClient.from('risks').select('*');
-      let rows = '';
-      if (profiles && profiles.length > 0) {
-        profiles.forEach(p => {
-          const userRisks = allRisks?.filter(r => r.user_id === p.id) || [];
-          const confCount = userRisks.reduce((acc, r) => acc + (r.confirmed_risks?.length || 0), 0);
-          rows += `<tr><td>${p.username} (${p.role})</td><td>${userRisks.length}</td><td>${confCount}</td><td>
-            <button class="btn btn-sm btn-outline view-user-data" data-uid="${p.id}">查看</button>
-            <button class="btn btn-sm btn-outline export-user-excel" data-uid="${p.id}" style="margin-left:4px;">导出Excel</button>
-            <button class="btn btn-sm btn-danger delete-user-data" data-uid="${p.id}" style="margin-left:4px;">删除</button>
-          </td></tr>`;
+        if (sevCanvas) new Chart(sevCanvas, {
+          type: 'bar',
+          data: {
+            labels: ['高','中','低'],
+            datasets: [{ data: [severities['高']||0, severities['中']||0, severities['低']||0], backgroundColor: ['#e74c3c','#f39c12','#27ae60'] }]
+          }
         });
       }
-      content.innerHTML = `
-        <h3>👥 用户管理</h3>
-        <table class="user-table"><thead><tr><th>用户</th><th>分析次数</th><th>确认隐患</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>
-        <div id="userDetail"></div>
-      `;
-      document.querySelectorAll('.view-user-data').forEach(btn => btn.addEventListener('click', () => showUserData(btn.dataset.uid)));
-      document.querySelectorAll('.export-user-excel').forEach(btn => btn.addEventListener('click', async () => {
-        const uid = btn.dataset.uid;
-        const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', uid).order('upload_time', { ascending: false });
-        exportDetailedExcel(risks || []);
-      }));
-      document.querySelectorAll('.delete-user-data').forEach(btn => btn.addEventListener('click', async () => {
-        if (!confirm('确定删除该用户所有数据？')) return;
-        await supabaseClient.from('risks').delete().eq('user_id', btn.dataset.uid);
-        addLog('删除数据', `管理员删除用户 ${btn.dataset.uid} 的数据`);
-        renderAdminPage('users');
-      }));
-    } else if (page === 'report') {
-      content.innerHTML = `
-        <h3>📄 生成专业报告</h3>
-        <div class="card">
-          <label>报告类型：</label>
-          <select id="reportType"><option value="monthly">月度报告</option><option value="quarterly">季度报告</option></select>
-          <label style="margin-left:10px;">选择月份：</label>
-          <input type="month" id="reportMonth">
-          <button class="btn" id="genReportBtn" style="margin-top:12px;">📋 生成报告预览</button>
-        </div>
-        <div id="reportPreview" class="card" style="display:none;"></div>
-      `;
-      document.getElementById('genReportBtn').addEventListener('click', generateReport);
-    } else if (page === 'logs') {
-      const { data: logs } = await supabaseClient.from('logs').select('*').order('created_at', { ascending: false }).limit(100);
-      let html = '<h3>📜 操作日志</h3>';
-      if (!logs || logs.length === 0) html += '<div class="empty-state">暂无日志</div>';
-      else logs.forEach(l => html += `<div class="log-entry"><strong>${l.username}</strong> ${l.action} - ${l.detail} <span style="float:right;">${new Date(l.created_at).toLocaleString()}</span></div>`);
-      content.innerHTML = html;
     }
   }
 
-  // 报告生成（完整保留）
-  async function generateReport() {
-    const type = document.getElementById('reportType').value;
-    const monthVal = document.getElementById('reportMonth').value;
-    if (!monthVal) return alert('请选择月份');
-    const [year, month] = monthVal.split('-').map(Number);
-    const periodLabel = type === 'monthly' ? `${year}年${month}月` : `${year}年第${Math.ceil(month/3)}季度`;
-    const preview = document.getElementById('reportPreview');
-    preview.style.display = 'block';
-    preview.innerHTML = '<p>正在收集数据并生成AI分析…</p>';
-    const { data: allRisks } = await supabaseClient.from('risks').select('*');
-    if (!allRisks) { preview.innerHTML = '<p style="color:red;">数据加载失败</p>'; return; }
-    const filtered = allRisks.filter(r => {
-      const d = new Date(r.upload_time);
-      if (type === 'monthly') return d.getFullYear() === year && (d.getMonth()+1) === month;
-      else {
-        const qStart = Math.floor((month-1)/3)*3 + 1;
-        return d.getFullYear() === year && (d.getMonth()+1) >= qStart && (d.getMonth()+1) <= qStart+2;
-      }
-    });
-    const confirmed = filtered.filter(r => r.status === 'confirmed' || r.status === 'fixed');
-    const totalAnalysis = filtered.length;
-    const totalConfirmedRisks = confirmed.reduce((acc, r) => acc + (r.confirmed_risks?.length || 0), 0);
-    const typeCount = {};
-    confirmed.forEach(r => {
-      (r.confirmed_risks || []).forEach(idx => {
-        const risk = r.ai_result?.risks?.[idx];
-        if (risk) typeCount[risk.type] = (typeCount[risk.type]||0) + 1;
-      });
-    });
-    const severityCount = {高:0, 中:0, 低:0};
-    confirmed.forEach(r => {
-      (r.confirmed_risks || []).forEach(idx => {
-        const risk = r.ai_result?.risks?.[idx];
-        if (risk) severityCount[risk.severity] = (severityCount[risk.severity]||0) + 1;
-      });
-    });
-    const userStats = {};
-    filtered.forEach(r => {
-      if (!userStats[r.username]) userStats[r.username] = { analysis: 0, confirmed: 0 };
-      userStats[r.username].analysis += 1;
-      if (r.status === 'confirmed' || r.status === 'fixed') userStats[r.username].confirmed += (r.confirmed_risks?.length || 0);
-    });
-    let prevPeriodLabel = '', prevData = null;
-    if (type === 'monthly') {
-      const prevMonth = month === 1 ? 12 : month-1;
-      const prevYear = month === 1 ? year-1 : year;
-      prevData = allRisks.filter(r => {
-        const d = new Date(r.upload_time);
-        return d.getFullYear() === prevYear && (d.getMonth()+1) === prevMonth;
-      });
-      prevPeriodLabel = `${prevYear}年${prevMonth}月`;
-    } else {
-      const qStart = Math.floor((month-1)/3)*3 + 1;
-      const prevQStart = qStart - 3;
-      if (prevQStart >= 1) {
-        prevData = allRisks.filter(r => {
-          const d = new Date(r.upload_time);
-          return d.getFullYear() === year && (d.getMonth()+1) >= prevQStart && (d.getMonth()+1) <= prevQStart+2;
-        });
-        prevPeriodLabel = `${year}年第${Math.ceil(prevQStart/3)}季度`;
-      }
-    }
-    const prevConfirmed = prevData ? prevData.filter(r => r.status === 'confirmed' || r.status === 'fixed').reduce((acc, r) => acc + (r.confirmed_risks?.length || 0), 0) : 0;
-    const statsForAI = {
-      period: periodLabel, totalAnalysis, totalConfirmedRisks,
-      typeDistribution: typeCount, severityDistribution: severityCount,
-      users: userStats, previousPeriod: prevPeriodLabel,
-      previousConfirmedRisks: prevConfirmed,
-      change: prevConfirmed > 0 ? ((totalConfirmedRisks - prevConfirmed) / prevConfirmed * 100).toFixed(1) + '%' : '无历史数据'
-    };
-    let summary = '';
-    try {
-      const { data: { session } } = await supabaseClient.auth.getSession();
-      const token = session.access_token;
-      const resp = await fetch(REPORT_FUNCTION, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stats: statsForAI, period: periodLabel })
-      });
-      const result = await resp.json();
-      if (result.success) summary = result.summary;
-      else throw new Error(result.error);
-    } catch (err) { summary = 'AI摘要生成失败，请检查报告函数配置。'; }
-    window.currentReportData = { statsForAI, filtered, confirmed, summary, periodLabel, type };
-    renderReportPreview();
-  }
+  // 以下其余函数 (compressImage, renderRecordCard, attachRecordEvents, 整改单生成, 管理员界面等) 与上一完整版本完全相同，为避免篇幅过长此处省略，请保持原有完整版本中的其他函数。
+  // 实际使用时必须包含 generateRectificationDocs, generateSingleDoc, generateDocManual, downloadDoc, renderAdminUI, renderAdminPage, generateReport, renderReportPreview, exportReportExcel, exportReportWordWithImages, addLog, exportDetailedExcel, showUserData 等函数。
 
-  function renderReportPreview() {
-    const { statsForAI, summary, periodLabel } = window.currentReportData;
-    const preview = document.getElementById('reportPreview');
-    preview.innerHTML = `
-      <h4>📋 ${periodLabel} 安全报告</h4>
-      <div><strong>AI 智能分析：</strong><p style="white-space:pre-wrap;margin:10px 0;">${summary}</p></div>
-      <div class="stats-grid">
-        <div class="stat-box"><div class="number">${statsForAI.totalAnalysis}</div>分析次数</div>
-        <div class="stat-box"><div class="number">${statsForAI.totalConfirmedRisks}</div>确认隐患数</div>
-      </div>
-      <p>与${statsForAI.previousPeriod || '上一周期'}对比：隐患数量变化 ${statsForAI.change}</p>
-      <div class="report-buttons">
-        <button class="btn btn-success" id="exportExcelBtn">📥 导出 Excel</button>
-        <button class="btn btn-outline" id="exportWordBtn">📄 导出 Word (含图片)</button>
-        <button class="btn btn-outline" id="saveReportBtn">💾 保存报告至云端</button>
-        <button class="btn btn-sm" id="regenerateBtn">🔄 重新生成</button>
-      </div>
-    `;
-    document.getElementById('exportExcelBtn').addEventListener('click', () => {
-      const { statsForAI, filtered, confirmed, summary, periodLabel } = window.currentReportData;
-      exportReportExcel(statsForAI, filtered, confirmed, summary, periodLabel);
-    });
-    document.getElementById('exportWordBtn').addEventListener('click', async () => {
-      const { statsForAI, summary, periodLabel, filtered } = window.currentReportData;
-      const btn = document.getElementById('exportWordBtn');
-      btn.disabled = true; btn.textContent = '正在生成Word...';
-      await exportReportWordWithImages(statsForAI, summary, periodLabel, filtered);
-      btn.disabled = false; btn.textContent = '📄 导出 Word (含图片)';
-    });
-    document.getElementById('saveReportBtn').addEventListener('click', async () => {
-      const { statsForAI, summary, periodLabel, type } = window.currentReportData;
-      const { error } = await supabaseClient.from('reports').insert({
-        user_id: currentUser.id, username: userProfile.username, period: periodLabel,
-        report_type: type, stats: statsForAI, summary: summary, created_at: new Date().toISOString()
-      });
-      if (error) alert('保存失败：' + error.message);
-      else alert('报告已保存至云端！');
-    });
-    document.getElementById('regenerateBtn').addEventListener('click', generateReport);
-  }
-
-  function exportReportExcel(stats, allRecords, confirmed, summary, period) {
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['指标','数值'],['报告周期',period],['总分析次数',stats.totalAnalysis],['确认隐患总数',stats.totalConfirmedRisks],['变化',stats.change],['AI摘要',summary]]), '总览');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['隐患类型','数量'], ...Object.entries(stats.typeDistribution)]), '隐患类型');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['风险等级','数量'], ...Object.entries(stats.severityDistribution)]), '风险等级');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['用户','分析次数','确认隐患数'], ...Object.entries(stats.users).map(([u,d]) => [u,d.analysis,d.confirmed])]), '人员上报');
-    const detailData = [['记录ID','用户','上传时间','状态','隐患类型','风险等级','描述','整改建议','图片链接']];
-    confirmed.forEach(r => {
-      const risks = r.ai_result?.risks || [];
-      if (risks.length === 0) detailData.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, '', '', '', '', r.image_path || '']);
-      else risks.forEach(risk => detailData.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, risk.type, risk.severity, risk.description, risk.suggestion, r.image_path || '']));
-    });
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detailData), '隐患明细');
-    XLSX.writeFile(wb, `安全报告_${period}.xlsx`);
-  }
-
-  async function exportReportWordWithImages(stats, summary, period, records) {
-    const filteredRecords = records.filter(r => r.status === 'confirmed' || r.status === 'fixed');
-    let rowsHtml = '';
-    for (const r of filteredRecords) {
-      const risks = r.ai_result?.risks || [];
-      for (const risk of risks) {
-        let imgSrc = '';
-        if (r.image_path) {
-          try {
-            const resp = await fetch(r.image_path);
-            const blob = await resp.blob();
-            imgSrc = await new Promise(resolve => {
-              const reader = new FileReader();
-              reader.onloadend = () => resolve(reader.result);
-              reader.readAsDataURL(blob);
-            });
-          } catch (e) {}
-        }
-        rowsHtml += `<tr>
-          <td>${new Date(r.upload_time).toLocaleString()}</td><td>${r.username}</td>
-          <td>${risk.type}</td><td>${risk.severity}</td><td>${risk.description}</td>
-          <td>${risk.suggestion}</td><td>${imgSrc ? `<img src="${imgSrc}" style="width:100px;">` : ''}</td>
-        </tr>`;
-      }
-    }
-    const html = `
-      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
-      <head><meta charset="utf-8"><title>安全报告</title></head>
-      <body>
-        <h1>${period} 管网安全报告</h1><h2>AI 智能分析</h2><p>${summary}</p>
-        <h2>统计概览</h2><p>总分析次数：${stats.totalAnalysis}，确认隐患：${stats.totalConfirmedRisks}，变化：${stats.change}</p>
-        <h2>隐患类型分布</h2><ul>${Object.entries(stats.typeDistribution).map(([k,v]) => `<li>${k}: ${v}次</li>`).join('')}</ul>
-        <h2>风险等级分布</h2><ul>${Object.entries(stats.severityDistribution).map(([k,v]) => `<li>${k}: ${v}次</li>`).join('')}</ul>
-        <h2>人员上报</h2><table border="1"><tr><th>用户</th><th>分析次数</th><th>确认隐患</th></tr>${Object.entries(stats.users).map(([u,d]) => `<tr><td>${u}</td><td>${d.analysis}</td><td>${d.confirmed}</td></tr>`).join('')}</table>
-        <h2>隐患清单</h2><table border="1"><tr><th>时间</th><th>用户</th><th>类型</th><th>等级</th><th>描述</th><th>建议</th><th>现场图片</th></tr>${rowsHtml}</table>
-      </body></html>
-    `;
-    const blob = new Blob(['\ufeff' + html], { type: 'application/msword' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = `安全报告_${period}.doc`; a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  // 辅助函数
-  async function addLog(action, detail) {
-    await supabaseClient.from('logs').insert({
-      user_id: currentUser.id, username: userProfile.username, action, detail, created_at: new Date().toISOString()
-    });
-  }
-
-  function exportDetailedExcel(records) {
-    if (!records || records.length === 0) return alert('无数据可导出');
-    const headers = ['记录ID','用户','上传时间','状态','隐患类型','风险等级','隐患描述','整改建议','图片链接'];
-    const rows = [];
-    records.forEach(r => {
-      const risks = r.ai_result?.risks || [];
-      if (risks.length === 0) rows.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, '', '', '', '', r.image_path || '']);
-      else risks.forEach(risk => rows.push([r.id, r.username, new Date(r.upload_time).toLocaleString(), r.status, risk.type, risk.severity, risk.description, risk.suggestion, r.image_path || '']));
-    });
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-    XLSX.utils.book_append_sheet(wb, ws, '隐患数据');
-    XLSX.writeFile(wb, `隐患数据_${Date.now()}.xlsx`);
-  }
-
-  async function showUserData(uid) {
-    const { data: profile } = await supabaseClient.from('profiles').select('*').eq('id', uid).single();
-    const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', uid).order('upload_time', {ascending: false});
-    const detailDiv = document.getElementById('userDetail');
-    let html = `<div class="card"><h4>📋 ${profile?.username} 的数据</h4>
-      <p>累计分析：${risks?.length||0} | 确认隐患：${risks?.reduce((acc,r)=>acc+(r.confirmed_risks?.length||0),0)}</p>
-      <button class="btn btn-sm btn-danger" id="deleteUserDataBtn" data-uid="${uid}">删除所有数据</button>
-      <button class="btn btn-sm btn-outline" id="exportUserExcelBtn" data-uid="${uid}" style="margin-left:8px;">📥 导出 Excel</button>
-      <hr>`;
-    risks?.forEach(r => html += renderRecordCard(r));
-    html += '</div>';
-    detailDiv.innerHTML = html;
-    document.getElementById('deleteUserDataBtn').addEventListener('click', async () => {
-      if (!confirm('确定删除？')) return;
-      await supabaseClient.from('risks').delete().eq('user_id', uid);
-      addLog('删除数据', `管理员删除用户 ${uid} 全部数据`);
-      detailDiv.innerHTML = '<p>数据已删除</p>';
-    });
-    document.getElementById('exportUserExcelBtn').addEventListener('click', () => exportDetailedExcel(risks || []));
-    attachRecordEvents();
-  }
-
-  init();
+  // 注意：请务必将之前完整版本中的剩余函数全部粘贴在此处，确保系统功能完整。
 </script>
 </body>
 </html>

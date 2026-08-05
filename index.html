@@ -4,9 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>AI+管网安全助手 云端版</title>
+  <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- Supabase -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- SheetJS (Excel) -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+  <!-- PizZip (DOCX 处理) -->
+  <script src="https://cdn.jsdelivr.net/npm/pizzip@3.1.4/dist/pizzip.min.js"></script>
+  <!-- Docxtemplater -->
+  <script src="https://cdn.jsdelivr.net/npm/docxtemplater@3.48.1/build/docxtemplater.min.js"></script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fb; color: #2c3e50; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 12px; }
@@ -18,7 +25,7 @@
     .bottom-nav .nav-item { display: flex; flex-direction: column; align-items: center; font-size: 11px; color: #7f8c8d; padding: 6px 8px; cursor: pointer; border-radius: 12px; transition: 0.2s; min-width: 55px; }
     .bottom-nav .nav-item.active { color: #1e3b5a; font-weight: 600; background: #eef2f6; }
     .bottom-nav .nav-item .icon { font-size: 20px; margin-bottom: 2px; }
-    .card { background: white; border-radius: 16px; padding: 18px; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.04); border: 1px solid #f0f0f0; }
+    .card { background: white; border-radius: 16px; padding: 18px; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.04); border: 1px solid #f0f0f0; position: relative; }
     .card h3 { font-size: 18px; margin-bottom: 12px; color: #1e3b5a; }
     .btn { display: inline-block; padding: 10px 20px; border-radius: 30px; border: none; font-weight: 600; font-size: 15px; cursor: pointer; background: #1e3b5a; color: white; text-align: center; transition: 0.2s; }
     .btn:active { opacity: 0.8; }
@@ -48,16 +55,24 @@
     .user-table th, .user-table td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 14px; }
     .user-table th { background: #f9f9f9; font-weight: 600; }
     .report-buttons { display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap; }
+    /* 选择模式 */
+    .select-checkbox { position: absolute; top: 12px; right: 12px; transform: scale(1.3); display: none; }
+    .select-mode .select-checkbox { display: block; }
+    .select-actions { display: none; margin: 10px 0; }
+    .select-mode .select-actions { display: flex; gap: 10px; }
   </style>
 </head>
 <body>
 <div class="app-container" id="app"></div>
 
 <script>
+  // ==================== 全局配置 ====================
   const SUPABASE_URL = 'https://xnebqywzurzwpfzlzyvw.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_RbCAWLM9oKmvOEDdt2ybQg_JQK8jo67';
   const EDGE_FUNCTION = 'https://xnebqywzurzwpfzlzyvw.supabase.co/functions/v1/analyze-image';
   const REPORT_FUNCTION = 'https://xnebqywzurzwpfzlzyvw.supabase.co/functions/v1/generate-report';
+  const TEMPLATE_BUCKET = 'templates';
+  const TEMPLATE_PATH = 'rectification_template.docx';
 
   const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { persistSession: true, detectSessionInUrl: false }
@@ -65,12 +80,17 @@
 
   let currentUser = null;
   let userProfile = null;
+  let currentPreviewURL = null;
+  let currentUploadFile = null;
+  let selectModeActive = false;
 
+  // 退出登录
   async function logout() {
     await supabaseClient.auth.signOut();
     window.location.reload();
   }
 
+  // 监听认证状态
   supabaseClient.auth.onAuthStateChange(async (event, session) => {
     if (event === 'SIGNED_OUT') {
       currentUser = null; userProfile = null; renderAuthPage('login');
@@ -163,9 +183,6 @@
   }
 
   // ==================== 安全员界面 ====================
-  let currentPreviewURL = null;
-  let currentUploadFile = null;
-
   function renderSafetyUI() {
     document.getElementById('app').innerHTML = `
       <div class="status-bar"><span>👷 ${userProfile.username}</span><button id="logoutBtn">退出</button></div>
@@ -199,9 +216,7 @@
         </div>
       `;
       const fi = document.getElementById('imageInput'), pr = document.getElementById('previewImage'), ab = document.getElementById('analyzeBtn');
-      if (currentPreviewURL) {
-        pr.src = currentPreviewURL; pr.style.display = 'block'; ab.disabled = false;
-      }
+      if (currentPreviewURL) { pr.src = currentPreviewURL; pr.style.display = 'block'; ab.disabled = false; }
       fi.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -218,7 +233,7 @@
         ab.disabled = true; ab.textContent = '⏳ 分析中...';
         document.getElementById('analysisResult').innerHTML = '<p>调用千问视觉模型分析…</p>';
         try {
-          const compressed = await compressImage(currentUploadFile, 600, 0.6);
+          const compressed = await compressImage(currentUploadFile, 800, 0.6);
           const base64 = compressed.split(',')[1];
           const { data: { session } } = await supabaseClient.auth.getSession();
           if (!session) throw new Error('登录已过期');
@@ -243,9 +258,37 @@
     } else if (page === 'records') {
       const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', currentUser.id).order('upload_time', { ascending: false });
       let html = '<h3>📋 我的记录</h3>';
+      const confirmedRecords = risks?.filter(r => r.status === 'confirmed' || r.status === 'fixed') || [];
+      if (confirmedRecords.length > 0) {
+        html += `<div style="margin-bottom:12px;">
+          <button class="btn btn-sm btn-outline" id="toggleSelectModeBtn">📎 生成整改单</button>
+        </div>`;
+      }
+      html += '<div id="recordsList">';
       if (!risks || risks.length === 0) html += '<div class="empty-state">暂无记录</div>';
       else risks.forEach(r => html += renderRecordCard(r));
+      html += '</div>';
       content.innerHTML = html;
+      if (confirmedRecords.length > 0) {
+        document.getElementById('toggleSelectModeBtn').addEventListener('click', () => {
+          selectModeActive = !selectModeActive;
+          const recordsContainer = document.getElementById('recordsList');
+          if (selectModeActive) {
+            recordsContainer.classList.add('select-mode');
+            let actionsHtml = '<div class="select-actions"><button class="btn btn-success" id="generateDocsBtn">生成并下载</button><button class="btn btn-outline" id="cancelSelectBtn">取消</button></div>';
+            content.insertAdjacentHTML('beforeend', actionsHtml);
+            document.getElementById('generateDocsBtn').addEventListener('click', generateRectificationDocs);
+            document.getElementById('cancelSelectBtn').addEventListener('click', () => {
+              selectModeActive = false;
+              recordsContainer.classList.remove('select-mode');
+              document.querySelector('.select-actions')?.remove();
+            });
+          } else {
+            recordsContainer.classList.remove('select-mode');
+            document.querySelector('.select-actions')?.remove();
+          }
+        });
+      }
       attachRecordEvents();
     } else if (page === 'stats') {
       const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', currentUser.id);
@@ -279,7 +322,8 @@
     }
   }
 
-  function compressImage(file, maxWidth = 600, quality = 0.6) {
+  // 图片压缩
+  function compressImage(file, maxWidth = 800, quality = 0.6) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -313,7 +357,9 @@
       </div>`;
     });
     const imgHtml = record.image_path ? `<a href="${record.image_path}" target="_blank"><img src="${record.image_path}" style="width:100%;max-height:150px;object-fit:cover;border-radius:10px;margin:8px 0;cursor:pointer;" title="点击查看原图"></a>` : '';
+    const checkboxHtml = (record.status === 'confirmed' || record.status === 'fixed') ? `<input type="checkbox" class="select-checkbox" data-rid="${record.id}">` : '';
     return `<div class="card">
+      ${checkboxHtml}
       <div style="display:flex;justify-content:space-between;"><span>📅 ${new Date(record.upload_time).toLocaleString()}</span><span>${statusMap[record.status]}</span></div>
       ${imgHtml}
       ${riskHtml}
@@ -323,7 +369,7 @@
 
   function attachRecordEvents() {
     document.querySelectorAll('.confirm-risk').forEach(btn => {
-      btn.onclick = async function() {
+      btn.addEventListener('click', async function() {
         const rid = +this.dataset.rid, idx = +this.dataset.idx;
         const { data: rec } = await supabaseClient.from('risks').select('*').eq('id', rid).single();
         if (rec && rec.status === 'pending') {
@@ -335,10 +381,10 @@
           addLog('确认隐患', `记录${rid} 确认${idx}`);
           renderSafetyPage('records');
         }
-      };
+      });
     });
     document.querySelectorAll('.false-alarm').forEach(btn => {
-      btn.onclick = async function() {
+      btn.addEventListener('click', async function() {
         const rid = +this.dataset.rid, idx = +this.dataset.idx;
         const { data: rec } = await supabaseClient.from('risks').select('*').eq('id', rid).single();
         if (rec && rec.status === 'pending') {
@@ -350,13 +396,13 @@
           addLog('标记误报', `记录${rid} 误报${idx}`);
           renderSafetyPage('records');
         }
-      };
+      });
     });
     document.querySelectorAll('.upload-fix').forEach(btn => {
-      btn.onclick = async function() {
+      btn.addEventListener('click', async function() {
         const rid = +this.dataset.rid;
         const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*';
-        input.onchange = async (e) => {
+        input.addEventListener('change', async (e) => {
           const file = e.target.files[0]; if(!file) return;
           const fileName = `fix/${rid}_${Date.now()}.jpg`;
           await supabaseClient.storage.from('fix-photos').upload(fileName, file);
@@ -365,10 +411,136 @@
           await supabaseClient.from('risks').update({ fix_image_path: urlData.publicUrl, fix_desc: desc || '已整改', fix_time: new Date().toISOString(), status: 'fixed' }).eq('id', rid);
           addLog('上传整改', `记录${rid} 完成整改`);
           renderSafetyPage('records');
-        };
+        });
         input.click();
-      };
+      });
     });
+  }
+
+  // ==================== 整改单生成 ====================
+  async function generateRectificationDocs() {
+    const checkboxes = document.querySelectorAll('.select-checkbox:checked');
+    if (checkboxes.length === 0) { alert('请至少勾选一条记录'); return; }
+    const selectedIds = Array.from(checkboxes).map(cb => +cb.dataset.rid);
+    const { data: allRisks } = await supabaseClient.from('risks').select('*').in('id', selectedIds);
+    if (!allRisks || allRisks.length === 0) return alert('未找到记录');
+
+    try {
+      const { data: templateBlob, error } = await supabaseClient.storage.from(TEMPLATE_BUCKET).download(TEMPLATE_PATH);
+      if (error) throw error;
+      for (const record of allRisks) {
+        await generateSingleDoc(templateBlob, record);
+      }
+      selectModeActive = false;
+      document.getElementById('recordsList')?.classList.remove('select-mode');
+      document.querySelector('.select-actions')?.remove();
+    } catch (e) {
+      alert('生成失败：' + e.message);
+    }
+  }
+
+  async function generateSingleDoc(templateBlob, record) {
+    const zip = new PizZip(await templateBlob.arrayBuffer());
+    const doc = new docxtemplater(zip, { paragraphLoop: true, linebreaks: true, nullGetter: () => '' });
+
+    const confirmedRisks = record.ai_result?.risks?.filter((_, idx) => record.confirmed_risks?.includes(idx)) || [];
+    const riskDescriptions = confirmedRisks.map(r => r.description).join('；');
+    const riskSuggestions = confirmedRisks.map(r => r.suggestion).join('；');
+
+    let imageBase64 = '';
+    if (record.image_path) {
+      try {
+        const resp = await fetch(record.image_path);
+        const blob = await resp.blob();
+        imageBase64 = await new Promise(resolve => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.readAsDataURL(blob);
+        });
+      } catch (e) { /* 忽略 */ }
+    }
+
+    const data = {
+      编号: record.id,
+      检查时间: new Date(record.upload_time).toLocaleString(),
+      整改期限: '',
+      整改班组: '',
+      整改责任人: '',
+      隐患内容: riskDescriptions || '无',
+      隐患照片: imageBase64,
+      整改要求: riskSuggestions || '无'
+    };
+
+    try {
+      doc.setData(data);
+      doc.render();
+      const out = doc.getZip().generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      downloadDoc(out, record, '');
+    } catch (e) {
+      console.warn('标准渲染失败，使用手动替换', e);
+      await generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions);
+    }
+  }
+
+  async function generateDocManual(templateBlob, record, imageBase64, riskDescriptions, riskSuggestions) {
+    const zip = new PizZip(await templateBlob.arrayBuffer());
+    let xml = zip.file('word/document.xml').asText();
+    xml = xml.replace(/{编号}/g, record.id);
+    xml = xml.replace(/{检查时间}/g, new Date(record.upload_time).toLocaleString());
+    xml = xml.replace(/{整改期限}/g, '');
+    xml = xml.replace(/{整改班组}/g, '');
+    xml = xml.replace(/{整改责任人}/g, '');
+    xml = xml.replace(/{隐患内容}/g, riskDescriptions || '无');
+    xml = xml.replace(/{整改要求}/g, riskSuggestions || '无');
+
+    if (imageBase64 && xml.includes('{隐患照片}')) {
+      const imgId = 'rId' + Math.random().toString(36).substr(2, 8);
+      const imgFileName = 'image1.jpg';
+      const base64Data = imageBase64.split(',')[1];
+      const binaryStr = atob(base64Data);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+      zip.file(`word/media/${imgFileName}`, bytes);
+
+      const imageXml = `
+        <w:drawing>
+          <wp:inline distT="0" distB="0" distL="0" distR="0">
+            <wp:extent cx="3000000" cy="2250000"/>
+            <wp:docPr id="1" name="Picture 1"/>
+            <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:nvPicPr><pic:cNvPr id="0" name="Picture 1"/><pic:cNvPicPr/></pic:nvPicPr>
+                  <pic:blipFill><a:blip r:embed="${imgId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+                  <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3000000" cy="2250000"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr>
+                </pic:pic>
+              </a:graphicData>
+            </a:graphic>
+          </wp:inline>
+        </w:drawing>`;
+      xml = xml.replace(/{隐患照片}/g, imageXml);
+
+      let relsXml = zip.file('word/_rels/document.xml.rels')?.asText() || '';
+      relsXml += `<Relationship Id="${imgId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${imgFileName}"/>`;
+      zip.file('word/_rels/document.xml.rels', relsXml);
+
+      let contentTypes = zip.file('[Content_Types].xml')?.asText() || '';
+      if (!contentTypes.includes('image/jpeg')) {
+        contentTypes = contentTypes.replace('</Types>', '<Default Extension="jpg" ContentType="image/jpeg"/></Types>');
+        zip.file('[Content_Types].xml', contentTypes);
+      }
+    }
+
+    zip.file('word/document.xml', xml);
+    const blob = zip.generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    downloadDoc(blob, record, '');
+  }
+
+  function downloadDoc(blob, record, team) {
+    const filename = `遂安﹝2026﹞${record.id}号-${team || '未指定'}作业班组.docx`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
   }
 
   // ==================== 管理员界面 ====================
@@ -419,8 +591,7 @@
         const canvas = document.getElementById('adminTypeChart');
         if (canvas) new Chart(canvas, { type: 'pie', data: { labels: Object.keys(typeCount), datasets: [{ data: Object.values(typeCount), backgroundColor: ['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c'] }] } });
       }
-      const exportBtn = document.getElementById('exportExcelBtn');
-      if (exportBtn) exportBtn.addEventListener('click', () => exportDetailedExcel(allRisks || []));
+      document.getElementById('exportExcelBtn').addEventListener('click', () => exportDetailedExcel(allRisks || []));
     } else if (page === 'users') {
       const { data: profiles } = await supabaseClient.from('profiles').select('*');
       const { data: allRisks } = await supabaseClient.from('risks').select('*');
@@ -441,19 +612,18 @@
         <table class="user-table"><thead><tr><th>用户</th><th>分析次数</th><th>确认隐患</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>
         <div id="userDetail"></div>
       `;
-      // 安全绑定事件
-      document.querySelectorAll('.view-user-data').forEach(btn => btn.onclick = () => showUserData(btn.dataset.uid));
-      document.querySelectorAll('.export-user-excel').forEach(btn => btn.onclick = async () => {
+      document.querySelectorAll('.view-user-data').forEach(btn => btn.addEventListener('click', () => showUserData(btn.dataset.uid)));
+      document.querySelectorAll('.export-user-excel').forEach(btn => btn.addEventListener('click', async () => {
         const uid = btn.dataset.uid;
         const { data: risks } = await supabaseClient.from('risks').select('*').eq('user_id', uid).order('upload_time', { ascending: false });
         exportDetailedExcel(risks || []);
-      });
-      document.querySelectorAll('.delete-user-data').forEach(btn => btn.onclick = async () => {
+      }));
+      document.querySelectorAll('.delete-user-data').forEach(btn => btn.addEventListener('click', async () => {
         if (!confirm('确定删除该用户所有数据？')) return;
         await supabaseClient.from('risks').delete().eq('user_id', btn.dataset.uid);
         addLog('删除数据', `管理员删除用户 ${btn.dataset.uid} 的数据`);
         renderAdminPage('users');
-      });
+      }));
     } else if (page === 'report') {
       content.innerHTML = `
         <h3>📄 生成专业报告</h3>
@@ -476,7 +646,7 @@
     }
   }
 
-  // 报告生成（保持不变，仅修复 Word 导出为内嵌图片）
+  // 报告生成（完整保留）
   async function generateReport() {
     const type = document.getElementById('reportType').value;
     const monthVal = document.getElementById('reportMonth').value;
@@ -605,7 +775,6 @@
     document.getElementById('regenerateBtn').addEventListener('click', generateReport);
   }
 
-  // 导出 Excel（含图片链接）
   function exportReportExcel(stats, allRecords, confirmed, summary, period) {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['指标','数值'],['报告周期',period],['总分析次数',stats.totalAnalysis],['确认隐患总数',stats.totalConfirmedRisks],['变化',stats.change],['AI摘要',summary]]), '总览');
@@ -622,59 +791,41 @@
     XLSX.writeFile(wb, `安全报告_${period}.xlsx`);
   }
 
-  // 导出 Word（内嵌图片）
   async function exportReportWordWithImages(stats, summary, period, records) {
-    // 将图片链接转换为 base64 的函数
-    async function imageToBase64(url) {
-      try {
-        const resp = await fetch(url);
-        const blob = await resp.blob();
-        return new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result);
-          reader.readAsDataURL(blob);
-        });
-      } catch (e) {
-        return url; // 失败则保留原始链接
-      }
-    }
-
-    // 构建隐患清单表格
-    let rowsHtml = '';
     const filteredRecords = records.filter(r => r.status === 'confirmed' || r.status === 'fixed');
+    let rowsHtml = '';
     for (const r of filteredRecords) {
       const risks = r.ai_result?.risks || [];
       for (const risk of risks) {
-        const imgSrc = r.image_path ? await imageToBase64(r.image_path) : '';
+        let imgSrc = '';
+        if (r.image_path) {
+          try {
+            const resp = await fetch(r.image_path);
+            const blob = await resp.blob();
+            imgSrc = await new Promise(resolve => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result);
+              reader.readAsDataURL(blob);
+            });
+          } catch (e) {}
+        }
         rowsHtml += `<tr>
-          <td>${new Date(r.upload_time).toLocaleString()}</td>
-          <td>${r.username}</td>
-          <td>${risk.type}</td>
-          <td>${risk.severity}</td>
-          <td>${risk.description}</td>
-          <td>${risk.suggestion}</td>
-          <td>${imgSrc ? `<img src="${imgSrc}" style="width:100px;">` : ''}</td>
+          <td>${new Date(r.upload_time).toLocaleString()}</td><td>${r.username}</td>
+          <td>${risk.type}</td><td>${risk.severity}</td><td>${risk.description}</td>
+          <td>${risk.suggestion}</td><td>${imgSrc ? `<img src="${imgSrc}" style="width:100px;">` : ''}</td>
         </tr>`;
       }
     }
-
     const html = `
       <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
       <head><meta charset="utf-8"><title>安全报告</title></head>
       <body>
-        <h1>${period} 管网安全报告</h1>
-        <h2>AI 智能分析</h2>
-        <p>${summary}</p>
-        <h2>统计概览</h2>
-        <p>总分析次数：${stats.totalAnalysis}，确认隐患：${stats.totalConfirmedRisks}，变化：${stats.change}</p>
-        <h2>隐患类型分布</h2>
-        <ul>${Object.entries(stats.typeDistribution).map(([k,v]) => `<li>${k}: ${v}次</li>`).join('')}</ul>
-        <h2>风险等级分布</h2>
-        <ul>${Object.entries(stats.severityDistribution).map(([k,v]) => `<li>${k}: ${v}次</li>`).join('')}</ul>
-        <h2>人员上报</h2>
-        <table border="1"><tr><th>用户</th><th>分析次数</th><th>确认隐患</th></tr>${Object.entries(stats.users).map(([u,d]) => `<tr><td>${u}</td><td>${d.analysis}</td><td>${d.confirmed}</td></tr>`).join('')}</table>
-        <h2>隐患清单</h2>
-        <table border="1"><tr><th>时间</th><th>用户</th><th>类型</th><th>等级</th><th>描述</th><th>建议</th><th>现场图片</th></tr>${rowsHtml}</table>
+        <h1>${period} 管网安全报告</h1><h2>AI 智能分析</h2><p>${summary}</p>
+        <h2>统计概览</h2><p>总分析次数：${stats.totalAnalysis}，确认隐患：${stats.totalConfirmedRisks}，变化：${stats.change}</p>
+        <h2>隐患类型分布</h2><ul>${Object.entries(stats.typeDistribution).map(([k,v]) => `<li>${k}: ${v}次</li>`).join('')}</ul>
+        <h2>风险等级分布</h2><ul>${Object.entries(stats.severityDistribution).map(([k,v]) => `<li>${k}: ${v}次</li>`).join('')}</ul>
+        <h2>人员上报</h2><table border="1"><tr><th>用户</th><th>分析次数</th><th>确认隐患</th></tr>${Object.entries(stats.users).map(([u,d]) => `<tr><td>${u}</td><td>${d.analysis}</td><td>${d.confirmed}</td></tr>`).join('')}</table>
+        <h2>隐患清单</h2><table border="1"><tr><th>时间</th><th>用户</th><th>类型</th><th>等级</th><th>描述</th><th>建议</th><th>现场图片</th></tr>${rowsHtml}</table>
       </body></html>
     `;
     const blob = new Blob(['\ufeff' + html], { type: 'application/msword' });
@@ -683,6 +834,7 @@
     URL.revokeObjectURL(url);
   }
 
+  // 辅助函数
   async function addLog(action, detail) {
     await supabaseClient.from('logs').insert({
       user_id: currentUser.id, username: userProfile.username, action, detail, created_at: new Date().toISOString()

@@ -7,7 +7,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
-  <!-- 使用 jsdelivr 稳定加载文档库 -->
+  <!-- 稳定 jsdelivr CDN -->
   <script src="https://cdn.jsdelivr.net/npm/pizzip@3.1.4/dist/pizzip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/docxtemplater@3.48.1/build/docxtemplater.min.js"></script>
   <style>
@@ -276,8 +276,9 @@
       html += '</div>';
       html += '<div id="selectActionsContainer"></div>';
       content.innerHTML = html;
-      if (confirmedRecords.length > 0) {
-        document.getElementById('toggleSelectModeBtn').addEventListener('click', () => {
+      const toggleBtn = document.getElementById('toggleSelectModeBtn');
+      if (toggleBtn) {
+        toggleBtn.addEventListener('click', () => {
           const recordsContainer = document.getElementById('recordsList');
           const selectActions = document.getElementById('selectActionsContainer');
           if (recordsContainer.classList.contains('select-mode')) {
@@ -290,8 +291,10 @@
                 <button class="btn btn-success" id="generateDocsBtn">生成并下载</button>
                 <button class="btn btn-outline" id="cancelSelectBtn">取消</button>
               </div>`;
-            document.getElementById('generateDocsBtn').addEventListener('click', generateRectificationDocs);
-            document.getElementById('cancelSelectBtn').addEventListener('click', () => {
+            const genBtn = document.getElementById('generateDocsBtn');
+            if (genBtn) genBtn.addEventListener('click', generateRectificationDocs);
+            const cancelBtn = document.getElementById('cancelSelectBtn');
+            if (cancelBtn) cancelBtn.addEventListener('click', () => {
               recordsContainer.classList.remove('select-mode');
               selectActions.innerHTML = '';
             });
@@ -669,7 +672,6 @@
       renderOverviewStats(content, 'all');
     } else if (page === 'users') {
       let { data: profiles } = await supabaseClient.from('profiles').select('*');
-      // 过滤掉管理员账户
       if (profiles) profiles = profiles.filter(p => p.role !== 'admin');
       const { data: allRisks } = await supabaseClient.from('risks').select('*');
       let rows = '';
@@ -764,8 +766,10 @@
       <button class="btn btn-outline" id="exportExcelBtn" style="margin-top:10px;">📥 导出全部数据 (Excel)</button>
     `;
 
-    document.getElementById('modeAllBtn').addEventListener('click', () => renderOverviewStats(content, 'all'));
-    document.getElementById('modeMonthlyBtn').addEventListener('click', () => renderOverviewStats(content, 'monthly'));
+    const allBtn = document.getElementById('modeAllBtn');
+    if (allBtn) allBtn.addEventListener('click', () => renderOverviewStats(content, 'all'));
+    const monthlyBtn = document.getElementById('modeMonthlyBtn');
+    if (monthlyBtn) monthlyBtn.addEventListener('click', () => renderOverviewStats(content, 'monthly'));
 
     if (totalConfirmed > 0) {
       if (currentPieChart) { currentPieChart.destroy(); currentPieChart = null; }
